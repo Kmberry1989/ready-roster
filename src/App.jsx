@@ -230,7 +230,7 @@ export default function App() {
               )}
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1 uppercase flex items-center gap-2"><Lock size={14}/> Email Account</label>
+                <label className="text-xs font-bold text-slate-700 mb-1 uppercase flex items-center gap-2"><Lock size={14}/> Email Account</label>
                 <input type="email" required value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className="w-full p-2.5 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
               </div>
               <div>
@@ -629,7 +629,7 @@ export default function App() {
                   </div>
 
                   <div className="pt-4 border-t border-slate-200 mt-6">
-                    <label className="block text-xs font-bold text-slate-700 mb-2 flex items-center gap-2 uppercase"><FileSignature size={16}/> Master Digital Signature</label>
+                    <label className="text-xs font-bold text-slate-700 mb-2 flex items-center gap-2 uppercase"><FileSignature size={16}/> Master Digital Signature</label>
                     <input type="text" value={signature} onChange={e => setSignature(e.target.value)} placeholder="Type your full legal name to sign all documents" className="w-full p-4 border-2 border-slate-200 rounded-xl focus:border-emerald-500 outline-none font-bold font-serif text-lg bg-white shadow-inner" />
                   </div>
 
