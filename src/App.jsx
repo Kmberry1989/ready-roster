@@ -46,6 +46,23 @@ const DEFAULT_TEMPLATES = [
   { title: 'Universal Code of Conduct', content: 'We are committed to providing a safe, inclusive, and harassment-free environment. All participants are expected to treat others with respect. Discrimination, harassment, or abusive behavior of any kind will result in immediate dismissal.', requiresAck: true }
 ];
 
+const INDUSTRY_LABELS = {
+  not_specified: 'Not Specified',
+  nonprofit: 'Non-Profit & Community',
+  corporate: 'Corporate & Enterprise',
+  healthcare: 'Healthcare & Medical',
+  construction: 'Construction & Trades',
+  events: 'Events & Hospitality',
+  education: 'Education & Academia',
+  government: 'Government & Public Sector',
+  technology: 'Technology & IT',
+  retail: 'Retail & Consumer Goods',
+  manufacturing: 'Manufacturing & Logistics',
+  finance: 'Finance & Insurance',
+  entertainment: 'Arts, Entertainment & Recreation',
+  other: 'Other'
+};
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [userProfile, setUserProfile] = useState(null); 
@@ -131,7 +148,7 @@ export default function App() {
   const AuthScreen = () => {
     const [isLogin, setIsLogin] = useState(true);
     const [roleTab, setRoleTab] = useState('volunteer');
-    const [formData, setFormData] = useState({ email: '', password: '', firstName: '', lastName: '', orgName: '', industry: 'nonprofit' });
+    const [formData, setFormData] = useState({ email: '', password: '', firstName: '', lastName: '', orgName: '', industry: 'not_specified' });
     const [error, setError] = useState('');
 
     const handleAuth = async (e) => {
@@ -219,11 +236,20 @@ export default function App() {
                   <div>
                     <label className="block text-xs font-bold text-indigo-900 mb-1 uppercase">Industry</label>
                     <select value={formData.industry} onChange={e => setFormData({...formData, industry: e.target.value})} className="w-full p-2.5 border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white">
+                      <option value="not_specified">Not Specified</option>
                       <option value="nonprofit">Non-Profit & Community</option>
                       <option value="corporate">Corporate & Enterprise</option>
                       <option value="healthcare">Healthcare & Medical</option>
                       <option value="construction">Construction & Trades</option>
                       <option value="events">Events & Hospitality</option>
+                      <option value="education">Education & Academia</option>
+                      <option value="government">Government & Public Sector</option>
+                      <option value="technology">Technology & IT</option>
+                      <option value="retail">Retail & Consumer Goods</option>
+                      <option value="manufacturing">Manufacturing & Logistics</option>
+                      <option value="finance">Finance & Insurance</option>
+                      <option value="entertainment">Arts, Entertainment & Recreation</option>
+                      <option value="other">Other</option>
                     </select>
                   </div>
                 </div>
@@ -318,7 +344,7 @@ export default function App() {
                 <Building2 className="text-indigo-400" size={24}/>
                 <div>
                   <h1 className="text-lg font-bold tracking-tight leading-tight">{myOrg?.name || 'Organization'}</h1>
-                  <p className="text-xs text-indigo-300 uppercase tracking-widest">{myOrg?.industry} Sector</p>
+                  <p className="text-xs text-indigo-300 uppercase tracking-widest">{INDUSTRY_LABELS[myOrg?.industry] || myOrg?.industry || 'Not Specified'}</p>
                 </div>
               </div>
             </div>
@@ -541,7 +567,7 @@ export default function App() {
                       <button key={org.id} onClick={() => { setSelectedOrg(org); setStep(1); }} className="flex items-center justify-between p-4 border-2 border-slate-100 rounded-xl hover:border-indigo-500 hover:bg-indigo-50 transition-all text-left group">
                         <div>
                           <div className="font-bold text-slate-800 flex items-center gap-2"><Building2 size={16}/> {org.name}</div>
-                          <div className="text-xs text-slate-500 uppercase font-bold tracking-wider mt-1">{org.industry}</div>
+                          <div className="text-xs text-slate-500 uppercase font-bold tracking-wider mt-1">{INDUSTRY_LABELS[org.industry] || org.industry || 'Not Specified'}</div>
                         </div>
                         <ChevronRight className="text-slate-300 group-hover:text-indigo-500 transition-colors" />
                       </button>
