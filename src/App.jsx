@@ -230,11 +230,6 @@ export default function App() {
         const userDocSnap = await getDoc(userDocRef);
 
         if (!userDocSnap.exists()) {
-          if (isLogin) {
-            await signOut(auth);
-            throw new Error('No ReadyRoster account exists for this Google account. Choose Sign Up to create one.');
-          }
-
           // New User Registration
           let orgId = null;
 
