@@ -466,6 +466,7 @@ export default function App() {
             orgId: orgId,
             applicationTargetJobId: roleTab === 'applicant' ? applicationJobId : null
           });
+          if (roleTab === 'employee' && employeeInviteId) await callWorkforce('acceptEmployeeInvitation', { invitationId: employeeInviteId });
         }
       } catch (err) {
         setError(err.message.replace('Firebase: ', ''));
@@ -525,6 +526,7 @@ export default function App() {
             orgId: orgId,
             applicationTargetJobId: !isLogin && roleTab === 'applicant' ? applicationJobId : null
           });
+          if (!isLogin && roleTab === 'employee' && employeeInviteId) await callWorkforce('acceptEmployeeInvitation', { invitationId: employeeInviteId });
         }
       } catch (err) {
         setError(err.message.replace('Firebase: ', ''));
@@ -552,7 +554,7 @@ export default function App() {
           )}
 
           <div className="p-6">
-            {employeeInviteId && <div className="mb-4 rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-900"><strong>You were invited as an employee.</strong> Create your account with the invited email; your organization invitation will be ready to accept next.</div>}
+            {employeeInviteId && <div className="mb-4 rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-900"><strong>You were invited as an employee.</strong> Create your account with the invited email and ReadyRoster will connect you to the organization automatically.</div>}
             {applicationJobId && <div className="mb-4 rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-900"><strong>Start your application.</strong> Create an applicant account to complete the organization’s application form.</div>}
             {error && <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm mb-4 border border-red-200">{error}</div>}
             
