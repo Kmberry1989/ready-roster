@@ -12,6 +12,7 @@ import {
   Building2, Briefcase, Lock, UserPlus, LogOut, ChevronRight, ClipboardCheck
 } from 'lucide-react';
 import { EmployeePortal, POLICY_LIBRARY, WorkforceAdminPanels } from './workforce';
+import { EmployeeExpansionPanel, WorkforceExpansionPanels } from './workforceExpansion';
 
 // --- FIREBASE INITIALIZATION ---
 const getEnvVar = (key) => {
@@ -84,6 +85,10 @@ export default function App() {
   const [leaveRequests, setLeaveRequests] = useState([]);
   const [timeEntries, setTimeEntries] = useState([]);
   const [employeeInvitations, setEmployeeInvitations] = useState([]);
+  const [orgRoles, setOrgRoles] = useState([]);
+  const [promotions, setPromotions] = useState([]);
+  const [shiftTrades, setShiftTrades] = useState([]);
+  const [holidays, setHolidays] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dataError, setDataError] = useState('');
 
@@ -168,6 +173,9 @@ export default function App() {
       subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'availability'), where('employeeUid', '==', user.uid)), setAvailability);
       subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'leaveRequests'), where('employeeUid', '==', user.uid)), setLeaveRequests);
       subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'timeEntries'), where('employeeUid', '==', user.uid)), setTimeEntries);
+      subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'orgRoles'), where('orgId', '==', userProfile.orgId)), setOrgRoles);
+      subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'shiftTrades'), where('participantUids', 'array-contains', user.uid)), setShiftTrades);
+      subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'holidays'), where('orgId', '==', userProfile.orgId)), setHolidays);
       setVolunteers([]);
       return () => {
         unsubOrgs(); unsubEvents(); unsubTemplates(); workforceUnsubs.forEach(unsubscribe => unsubscribe());
@@ -195,6 +203,10 @@ export default function App() {
     subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'shifts'), where('orgId', '==', userProfile.orgId)), setShifts);
     subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'timeEntries'), where('orgId', '==', userProfile.orgId)), setTimeEntries);
     subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'leaveRequests'), where('orgId', '==', userProfile.orgId)), setLeaveRequests);
+    subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'orgRoles'), where('orgId', '==', userProfile.orgId)), setOrgRoles);
+    subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'promotions'), where('orgId', '==', userProfile.orgId)), setPromotions);
+    subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'shiftTrades'), where('orgId', '==', userProfile.orgId)), setShiftTrades);
+    subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'holidays'), where('orgId', '==', userProfile.orgId)), setHolidays);
 
     return () => {
       unsubOrgs();
@@ -309,6 +321,41 @@ export default function App() {
 
   const handleReviewLeave = async (leaveRequestId, status, managerNote = '') => {
     await callWorkforce('reviewLeaveRequest', { leaveRequestId, status, managerNote });
+  };
+
+  const handleSaveRole = async (role) => {
+    await callWorkforce('saveOrgRole', { role });
+  };
+
+  const handlePromote = async (promotion) => {
+    await callWorkforce('promoteEmployee', promotion);
+  };
+
+  const handleSaveProfile = async (profileChanges) => {
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', user.uid), profileChanges, { merge: true });
+  };
+
+  const handleSaveBranding = async (branding) => {
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'organizations', userProfile.orgId), branding, { merge: true });
+  };
+
+  const handleCreateHoliday = async (holiday) => {
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'holidays'), { ...holiday, orgId: userProfile.orgId, createdAt: new Date().toISOString() });
+  };
+
+  const handleSaveTemplateFields = async ({ templateId, label, type, options }) => {
+    const template = templates.find(item => item.id === templateId);
+    if (!template) return;
+    const fields = [...(template.fields || []), { id: `field_${Date.now()}`, label, type, options: type === 'multiple_choice' ? options.split(',').map(item => item.trim()).filter(Boolean) : [], required: true }];
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'documentTemplates', templateId), { fields }, { merge: true });
+  };
+
+  const handleTradeRequest = async ({ shiftId, toEmployeeUid }) => {
+    await callWorkforce('requestShiftTrade', { shiftId, toEmployeeUid });
+  };
+
+  const handleReviewTrade = async (tradeId, status) => {
+    await callWorkforce('reviewShiftTrade', { tradeId, status });
   };
 
   const handleLoadPolicies = async () => {
@@ -586,11 +633,11 @@ export default function App() {
 
     return (
       <div className="min-h-screen bg-slate-50">
-        <div className="bg-slate-900 text-white p-6 shadow-md">
+        <div className="bg-slate-900 text-white p-6 shadow-md" style={{ backgroundColor: myOrg?.accentColor || '#0f172a' }}>
           <div className="max-w-6xl mx-auto flex justify-between items-center">
             <div className="flex items-center gap-6">
               <div className="flex items-center gap-2 pr-6 border-r border-slate-700">
-                 <ClipboardCheck size={24} className="text-indigo-400" />
+                 {myOrg?.logoUrl ? <img src={myOrg.logoUrl} alt="Organization logo" className="h-8 max-w-28 object-contain" /> : <ClipboardCheck size={24} className="text-indigo-400" />}
                  <span className="text-xl font-black tracking-tight">ReadyRoster</span>
               </div>
               <div className="flex items-center gap-3">
@@ -690,6 +737,7 @@ export default function App() {
               </div>
             </>
           ) : adminTab === 'workforce' ? (
+            <>
             <WorkforceAdminPanels
               organization={myOrg}
               employees={employees}
@@ -709,6 +757,23 @@ export default function App() {
               onReviewLeave={handleReviewLeave}
               onLoadPolicies={handleLoadPolicies}
             />
+            <WorkforceExpansionPanels
+              organization={myOrg}
+              employees={employees}
+              roles={orgRoles}
+              promotions={promotions}
+              shifts={shifts}
+              shiftTrades={shiftTrades}
+              holidays={holidays}
+              templates={myTemplates}
+              onSaveRole={handleSaveRole}
+              onPromote={handlePromote}
+              onSaveBranding={handleSaveBranding}
+              onReviewTrade={handleReviewTrade}
+              onCreateHoliday={handleCreateHoliday}
+              onSaveTemplateFields={handleSaveTemplateFields}
+            />
+            </>
           ) : (
             <div className="grid lg:grid-cols-2 gap-8 animate-in slide-in-from-right-8 duration-300">
               <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
@@ -972,7 +1037,8 @@ export default function App() {
 
   return (
     <div className="font-sans antialiased text-slate-900 selection:bg-indigo-200">
-      {userProfile.role === 'admin' ? <AdminDashboard /> : userProfile.role === 'employee' ? <EmployeePortal
+      {userProfile.role === 'admin' ? <AdminDashboard /> : userProfile.role === 'employee' ? <>
+        <EmployeePortal
         profile={userProfile}
         user={user}
         organization={organizationForUser}
@@ -990,7 +1056,9 @@ export default function App() {
         onClock={handleClock}
         onQuiz={handleSubmitQuiz}
         onAcceptInvite={handleAcceptInvitation}
-      /> : <VolunteerPortal />}
+      />
+      <EmployeeExpansionPanel profile={userProfile} organization={organizationForUser} roles={orgRoles} shifts={shifts} timeEntries={timeEntries} onSaveProfile={handleSaveProfile} onClock={handleClock} onTradeRequest={handleTradeRequest} />
+      </> : <VolunteerPortal />}
     </div>
   );
 }

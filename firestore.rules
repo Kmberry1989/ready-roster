@@ -116,5 +116,26 @@ service cloud.firestore {
     match /artifacts/{appId}/public/data/quizAttempts/{attemptId} {
       allow get, list: if signedIn() && (resource.data.employeeUid == request.auth.uid || isOrgAdmin(appId, resource.data.orgId));
     }
+
+    match /artifacts/{appId}/public/data/orgRoles/{roleId} {
+      allow get, list: if signedIn() && (isSameOrgUser(appId, resource.data.orgId, request.auth.uid) || isOrgAdmin(appId, resource.data.orgId));
+      allow create: if isOrgAdmin(appId, request.resource.data.orgId);
+      allow update, delete: if isOrgAdmin(appId, resource.data.orgId);
+    }
+
+    match /artifacts/{appId}/public/data/promotions/{promotionId} {
+      allow get, list: if signedIn() && (resource.data.employeeUid == request.auth.uid || isOrgAdmin(appId, resource.data.orgId));
+      allow create: if isOrgAdmin(appId, request.resource.data.orgId);
+    }
+
+    match /artifacts/{appId}/public/data/shiftTrades/{tradeId} {
+      allow get, list: if signedIn() && (request.auth.uid in resource.data.participantUids || isOrgAdmin(appId, resource.data.orgId));
+    }
+
+    match /artifacts/{appId}/public/data/holidays/{holidayId} {
+      allow get, list: if signedIn() && isSameOrgUser(appId, resource.data.orgId, request.auth.uid);
+      allow create: if isOrgAdmin(appId, request.resource.data.orgId);
+      allow update, delete: if isOrgAdmin(appId, resource.data.orgId);
+    }
   }
 }

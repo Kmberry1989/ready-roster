@@ -22,6 +22,19 @@ async function requireAdmin(request, appId) {
   return { auth, profile: { id: profile.id, ...profile.data() } };
 }
 
+async function requirePermission(request, appId, permission) {
+  const auth = await requireUser(request);
+  const profileSnap = await collection(appId, 'users').doc(auth.uid).get();
+  if (!profileSnap.exists || !profileSnap.data().orgId) throw new HttpsError('permission-denied', 'Organization access is required.');
+  const profile = { id: profileSnap.id, ...profileSnap.data() };
+  const org = await collection(appId, 'organizations').doc(profile.orgId).get();
+  if (org.data()?.adminUid === auth.uid) return { auth, profile };
+  if (!profile.roleId) throw new HttpsError('permission-denied', 'Your role does not have this permission.');
+  const role = await collection(appId, 'orgRoles').doc(profile.roleId).get();
+  if (!role.exists || !(role.data().permissions || []).includes(permission)) throw new HttpsError('permission-denied', 'Your role does not have this permission.');
+  return { auth, profile, role: role.data() };
+}
+
 const notification = (appId, { orgId, recipientUid, title, body, kind, sourceId }) => collection(appId, 'notifications').add({
   orgId, recipientUid, title, body, kind, sourceId: sourceId || null, readAt: null, createdAt: new Date().toISOString()
 });
@@ -131,9 +144,29 @@ export const clockAction = onCall(async (request) => {
   }
   if (!open) throw new HttpsError('failed-precondition', 'No open time entry was found.');
   if (action === 'startBreak') {
-    if (open.breakStartedAt) throw new HttpsError('failed-precondition', 'A break is already active.');
+    if (open.breakStartedAt || open.lunchStartedAt) throw new HttpsError('failed-precondition', 'Another break is already active.');
     await open.ref.update({ breakStartedAt: now, audit: FieldValue.arrayUnion({ action, at: now, byUid: auth.uid }) });
     return { timeEntryId: open.id, status: 'break' };
+  }
+  if (action === 'breakStart') {
+    if (open.breakStartedAt || open.lunchStartedAt) throw new HttpsError('failed-precondition', 'Another break is already active.');
+    await open.ref.update({ breakStartedAt: now, audit: FieldValue.arrayUnion({ action: 'breakStart', at: now, byUid: auth.uid }) });
+    return { timeEntryId: open.id, status: 'break' };
+  }
+  if (action === 'breakEnd') {
+    if (!open.breakStartedAt) throw new HttpsError('failed-precondition', 'No active break was found.');
+    await open.ref.update({ breakStartedAt: null, breakEndedAt: now, audit: FieldValue.arrayUnion({ action: 'breakEnd', at: now, byUid: auth.uid }) });
+    return { timeEntryId: open.id, status: 'open' };
+  }
+  if (action === 'lunchStart') {
+    if (open.breakStartedAt || open.lunchStartedAt) throw new HttpsError('failed-precondition', 'Another break is already active.');
+    await open.ref.update({ lunchStartedAt: now, audit: FieldValue.arrayUnion({ action: 'lunchStart', at: now, byUid: auth.uid }) });
+    return { timeEntryId: open.id, status: 'lunch' };
+  }
+  if (action === 'lunchEnd') {
+    if (!open.lunchStartedAt) throw new HttpsError('failed-precondition', 'No active lunch was found.');
+    await open.ref.update({ lunchStartedAt: null, lunchEndedAt: now, audit: FieldValue.arrayUnion({ action: 'lunchEnd', at: now, byUid: auth.uid }) });
+    return { timeEntryId: open.id, status: 'open' };
   }
   if (action === 'endBreak') {
     if (!open.breakStartedAt) throw new HttpsError('failed-precondition', 'No active break was found.');
@@ -183,6 +216,61 @@ export const reviewLeaveRequest = onCall(async (request) => {
   return { status };
 });
 
+export const saveOrgRole = onCall(async (request) => {
+  const appId = request.data.appId;
+  const { profile } = await requireAdmin(request, appId);
+  const role = request.data.role || {};
+  const name = String(role.name || '').trim();
+  if (!name) throw new HttpsError('invalid-argument', 'A role name is required.');
+  const ref = collection(appId, 'orgRoles').doc();
+  await ref.set({ orgId: profile.orgId, name, level: Math.max(1, Number(role.level) || 1), permissions: Array.isArray(role.permissions) ? role.permissions : [], availableForTrades: role.availableForTrades !== false, active: true, createdByUid: request.auth.uid, createdAt: new Date().toISOString() });
+  return { roleId: ref.id };
+});
+
+export const promoteEmployee = onCall(async (request) => {
+  const appId = request.data.appId;
+  const { profile } = await requirePermission(request, appId, 'managePeople');
+  const employeeRef = collection(appId, 'users').doc(request.data.employeeUid);
+  const roleRef = collection(appId, 'orgRoles').doc(request.data.roleId);
+  const [employee, role] = await Promise.all([employeeRef.get(), roleRef.get()]);
+  if (!employee.exists || employee.data().orgId !== profile.orgId || employee.data().role !== 'employee') throw new HttpsError('not-found', 'Employee was not found.');
+  if (!role.exists || role.data().orgId !== profile.orgId) throw new HttpsError('not-found', 'Role was not found.');
+  const effectiveDate = String(request.data.effectiveDate || new Date().toISOString().slice(0, 10));
+  await employeeRef.update({ roleId: role.id, positionTitle: role.data().name, seniorityDate: employee.data().seniorityDate || effectiveDate });
+  await collection(appId, 'promotions').add({ orgId: profile.orgId, employeeUid: employee.id, fromRoleId: employee.data().roleId || null, toRoleId: role.id, effectiveDate, note: String(request.data.note || ''), createdByUid: request.auth.uid, createdAt: new Date().toISOString() });
+  await notification(appId, { orgId: profile.orgId, recipientUid: employee.id, title: 'Congratulations on your promotion', body: `You are now ${role.data().name}.`, kind: 'promotion', sourceId: role.id });
+  return { roleId: role.id };
+});
+
+export const requestShiftTrade = onCall(async (request) => {
+  const appId = request.data.appId;
+  const { auth, profile } = await requireUser(request).then(async auth => {
+    const snap = await collection(appId, 'users').doc(auth.uid).get();
+    if (!snap.exists || snap.data().role !== 'employee' || !snap.data().orgId) throw new HttpsError('permission-denied', 'Employee access is required.');
+    return { auth, profile: { id: snap.id, ...snap.data() } };
+  });
+  const shift = await collection(appId, 'shifts').doc(request.data.shiftId).get();
+  const target = await collection(appId, 'users').doc(request.data.toEmployeeUid).get();
+  if (!shift.exists || shift.data().orgId !== profile.orgId || shift.data().employeeUid !== auth.uid) throw new HttpsError('not-found', 'Your shift was not found.');
+  if (!target.exists || target.data().orgId !== profile.orgId || target.data().role !== 'employee') throw new HttpsError('not-found', 'Trade employee was not found.');
+  if (!shift.data().roleId || !profile.roleId || profile.roleId !== target.data().roleId || profile.roleId !== shift.data().roleId) throw new HttpsError('failed-precondition', 'Both employees must hold the scheduled role to trade this shift.');
+  const trade = await collection(appId, 'shiftTrades').add({ orgId: profile.orgId, shiftId: shift.id, fromEmployeeUid: auth.uid, toEmployeeUid: target.id, participantUids: [auth.uid, target.id], status: 'pending', requestedAt: new Date().toISOString() });
+  return { tradeId: trade.id };
+});
+
+export const reviewShiftTrade = onCall(async (request) => {
+  const appId = request.data.appId;
+  const { profile } = await requirePermission(request, appId, 'approveShiftTrades');
+  const tradeRef = collection(appId, 'shiftTrades').doc(request.data.tradeId);
+  const trade = await tradeRef.get();
+  if (!trade.exists || trade.data().orgId !== profile.orgId) throw new HttpsError('not-found', 'Shift trade was not found.');
+  const status = request.data.status === 'approved' ? 'approved' : 'declined';
+  if (status === 'approved') await collection(appId, 'shifts').doc(trade.data().shiftId).update({ employeeUid: trade.data().toEmployeeUid, updatedAt: new Date().toISOString(), updatedByUid: request.auth.uid });
+  await tradeRef.update({ status, reviewedAt: new Date().toISOString(), reviewedByUid: request.auth.uid });
+  await notification(appId, { orgId: profile.orgId, recipientUid: trade.data().fromEmployeeUid, title: `Shift trade ${status}`, body: status === 'approved' ? 'Your shift trade was approved.' : 'Your shift trade was declined.', kind: 'shift_trade', sourceId: trade.id });
+  return { status };
+});
+
 const localDate = (date, timeZone) => {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
   const pick = (type) => parts.find((part) => part.type === type)?.value;
@@ -215,5 +303,29 @@ export const sendTrainingReminders = onSchedule('every 60 minutes', async () => 
     const target = collection(data.appId || 'org-onboarding', 'notifications').doc(id);
     if ((await target.get()).exists) return;
     await target.set({ orgId: data.orgId, recipientUid: data.employeeUid, title: overdue ? 'Training overdue' : 'Training due soon', body: `${data.templateSnapshot.title} is ${overdue ? 'overdue' : `due in ${days} day${days === 1 ? '' : 's'}`}.`, kind: 'training_due', sourceId: assignment.id, readAt: null, createdAt: new Date().toISOString() });
+  }));
+});
+
+export const sendWorkforceCelebrations = onSchedule('every day 09:00', async () => {
+  const today = new Date();
+  const monthDay = new Intl.DateTimeFormat('en-US', { month: '2-digit', day: '2-digit', timeZone: 'UTC' }).format(today).replace('/', '-');
+  const year = today.getUTCFullYear();
+  const users = await db.collectionGroup('users').where('role', '==', 'employee').get();
+  await Promise.all(users.docs.map(async userDoc => {
+    const data = userDoc.data();
+    if (!data.orgId) return;
+    const birthday = String(data.birthday || '').slice(5, 10);
+    const seniority = String(data.seniorityDate || data.joinedAt || '').slice(5, 10);
+    const display = data.preferredName || data.firstName || data.email || 'Employee';
+    const org = await collection(data.appId || 'org-onboarding', 'organizations').doc(data.orgId).get();
+    const recipients = [userDoc.id, org.data()?.adminUid].filter(Boolean);
+    if (birthday === monthDay) {
+      const id = `birthday-${userDoc.id}-${year}`;
+      for (const recipientUid of recipients) { const ref = collection(data.appId || 'org-onboarding', 'notifications').doc(`${id}-${recipientUid}`); if (!(await ref.get()).exists) await ref.set({ orgId: data.orgId, recipientUid, title: 'Birthday celebration', body: `Celebrate ${display}'s birthday today!`, kind: 'birthday', sourceId: userDoc.id, readAt: null, createdAt: today.toISOString() }); }
+    }
+    if (seniority === monthDay) {
+      const id = `anniversary-${userDoc.id}-${year}`;
+      for (const recipientUid of recipients) { const ref = collection(data.appId || 'org-onboarding', 'notifications').doc(`${id}-${recipientUid}`); if (!(await ref.get()).exists) await ref.set({ orgId: data.orgId, recipientUid, title: 'Work anniversary', body: `Congratulations to ${display} on their work anniversary!`, kind: 'anniversary', sourceId: userDoc.id, readAt: null, createdAt: today.toISOString() }); }
+    }
   }));
 });
