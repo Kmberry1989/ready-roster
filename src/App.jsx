@@ -41,6 +41,17 @@ const db = getFirestore(app);
 
 const appId = getEnvVar('VITE_APP_ID') || (typeof window !== 'undefined' && window.__app_id ? window.__app_id : 'org-onboarding');
 
+const csvCell = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`;
+const timeEntryHours = (entry) => {
+  const clockIn = Date.parse(entry.clockInAt);
+  const clockOut = Date.parse(entry.clockOutAt);
+  if (!Number.isFinite(clockIn) || !Number.isFinite(clockOut) || clockOut < clockIn) return 0;
+  const breakMinutes = (Date.parse(entry.breakEndedAt) - Date.parse(entry.breakStartedAt)) / 60000;
+  const lunchMinutes = (Date.parse(entry.lunchEndedAt) - Date.parse(entry.lunchStartedAt)) / 60000;
+  const unpaidMinutes = [breakMinutes, lunchMinutes].filter(Number.isFinite).reduce((sum, minutes) => sum + Math.max(0, minutes), 0);
+  return Math.max(0, ((clockOut - clockIn) / 3600000) - (unpaidMinutes / 60));
+};
+
 const DEFAULT_TEMPLATES = [
   { title: 'General Liability Waiver', content: 'I hereby release and discharge the organization from any and all liability, claims, or causes of action for injuries or damages arising out of my participation in volunteer activities. I voluntarily assume full responsibility for any risks of loss or personal injury.', requiresAck: false },
   { title: 'Non-Disclosure Agreement (NDA)', content: 'You agree to maintain the confidentiality of all proprietary information, trade secrets, and internal communications encountered during your engagement with the organization. This information may not be shared, published, or discussed with unauthorized third parties.', requiresAck: true },
@@ -300,7 +311,7 @@ export default function App() {
   };
 
   const handleCreateShift = async (shift) => {
-    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'shifts'), { ...shift, orgId: userProfile.orgId, status: 'published', createdByUid: user.uid, createdAt: new Date().toISOString() });
+    await callWorkforce('publishShift', { shift });
   };
 
   const handleAvailability = async (entry) => {
@@ -350,12 +361,34 @@ export default function App() {
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'documentTemplates', templateId), { fields }, { merge: true });
   };
 
-  const handleTradeRequest = async ({ shiftId, toEmployeeUid }) => {
-    await callWorkforce('requestShiftTrade', { shiftId, toEmployeeUid });
+  const handleTradeRequest = async ({ shiftId, toEmployeeEmail }) => {
+    await callWorkforce('requestShiftTrade', { shiftId, toEmployeeEmail });
   };
 
   const handleReviewTrade = async (tradeId, status) => {
     await callWorkforce('reviewShiftTrade', { tradeId, status });
+  };
+
+  const handleExportTimesheets = ({ format, employeeUid, from, to }) => {
+    const employeeMap = new Map(employees.map(person => [person.id, person]));
+    const rows = timeEntries
+      .filter(entry => !employeeUid || entry.employeeUid === employeeUid)
+      .filter(entry => !from || String(entry.clockInAt || '').slice(0, 10) >= from)
+      .filter(entry => !to || String(entry.clockInAt || '').slice(0, 10) <= to)
+      .map(entry => ({
+        employeeUid: entry.employeeUid,
+        employee: `${employeeMap.get(entry.employeeUid)?.preferredName || employeeMap.get(entry.employeeUid)?.firstName || 'Employee'} ${employeeMap.get(entry.employeeUid)?.lastName || ''}`.trim(),
+        clockInAt: entry.clockInAt || '', clockOutAt: entry.clockOutAt || '', status: entry.status || '',
+        netHours: Number(timeEntryHours(entry).toFixed(2)), breakEndedAt: entry.breakEndedAt || '', lunchEndedAt: entry.lunchEndedAt || ''
+      }));
+    const filename = `readyroster-timesheets-${from || 'all'}-to-${to || 'all'}.${format === 'csv' ? 'csv' : 'json'}`;
+    const content = format === 'csv'
+      ? [Object.keys(rows[0] || { employeeUid: '', employee: '', clockInAt: '', clockOutAt: '', status: '', netHours: '', breakEndedAt: '', lunchEndedAt: '' }).join(','), ...rows.map(row => Object.values(row).map(csvCell).join(','))].join('\n')
+      : JSON.stringify({ generatedAt: new Date().toISOString(), filters: { employeeUid: employeeUid || null, from: from || null, to: to || null }, entries: rows, totalNetHours: Number(rows.reduce((sum, row) => sum + row.netHours, 0).toFixed(2)) }, null, 2);
+    const blob = new Blob([content], { type: format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a'); anchor.href = url; anchor.download = filename; anchor.click();
+    URL.revokeObjectURL(url);
   };
 
   const handleLoadPolicies = async () => {
@@ -767,12 +800,14 @@ export default function App() {
               shiftTrades={shiftTrades}
               holidays={holidays}
               templates={myTemplates}
+              timeEntries={timeEntries}
               onSaveRole={handleSaveRole}
               onPromote={handlePromote}
               onSaveBranding={handleSaveBranding}
               onReviewTrade={handleReviewTrade}
               onCreateHoliday={handleCreateHoliday}
               onSaveTemplateFields={handleSaveTemplateFields}
+              onExportTimesheets={handleExportTimesheets}
             />
             </>
           ) : (

@@ -1,0 +1,10 @@
+{
+  "name": "ReadyRoster",
+  "short_name": "ReadyRoster",
+  "description": "Workforce scheduling, training, and timekeeping.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#0f172a",
+  "icons": [{ "src": "icons/readyroster.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

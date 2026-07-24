@@ -250,11 +250,22 @@ export const requestShiftTrade = onCall(async (request) => {
     return { auth, profile: { id: snap.id, ...snap.data() } };
   });
   const shift = await collection(appId, 'shifts').doc(request.data.shiftId).get();
-  const target = await collection(appId, 'users').doc(request.data.toEmployeeUid).get();
+  const targetEmail = String(request.data.toEmployeeEmail || '').trim().toLowerCase();
+  const target = request.data.toEmployeeUid
+    ? await collection(appId, 'users').doc(request.data.toEmployeeUid).get()
+    : targetEmail
+      ? (await collection(appId, 'users').where('email', '==', targetEmail).limit(1).get()).docs[0]
+      : null;
   if (!shift.exists || shift.data().orgId !== profile.orgId || shift.data().employeeUid !== auth.uid) throw new HttpsError('not-found', 'Your shift was not found.');
-  if (!target.exists || target.data().orgId !== profile.orgId || target.data().role !== 'employee') throw new HttpsError('not-found', 'Trade employee was not found.');
+  if (!target?.exists || target.data().orgId !== profile.orgId || target.data().role !== 'employee') throw new HttpsError('not-found', 'Trade employee was not found in your organization.');
   if (!shift.data().roleId || !profile.roleId || profile.roleId !== target.data().roleId || profile.roleId !== shift.data().roleId) throw new HttpsError('failed-precondition', 'Both employees must hold the scheduled role to trade this shift.');
+  const role = await collection(appId, 'orgRoles').doc(shift.data().roleId).get();
+  if (!role.exists || role.data().orgId !== profile.orgId || !role.data().availableForTrades) throw new HttpsError('failed-precondition', 'This scheduled role is not eligible for employee shift trades.');
+  if (target.id === auth.uid) throw new HttpsError('invalid-argument', 'Choose a different employee for the trade.');
   const trade = await collection(appId, 'shiftTrades').add({ orgId: profile.orgId, shiftId: shift.id, fromEmployeeUid: auth.uid, toEmployeeUid: target.id, participantUids: [auth.uid, target.id], status: 'pending', requestedAt: new Date().toISOString() });
+  const org = await collection(appId, 'organizations').doc(profile.orgId).get();
+  if (org.data()?.adminUid) await notification(appId, { orgId: profile.orgId, recipientUid: org.data().adminUid, title: 'Shift trade awaiting approval', body: `${profile.preferredName || profile.firstName || auth.token.email || 'An employee'} requested a shift trade.`, kind: 'shift_trade', sourceId: trade.id });
+  await notification(appId, { orgId: profile.orgId, recipientUid: target.id, title: 'Shift trade requested', body: 'A coworker requested to trade a shift with you; a manager must approve it.', kind: 'shift_trade', sourceId: trade.id });
   return { tradeId: trade.id };
 });
 
@@ -265,10 +276,33 @@ export const reviewShiftTrade = onCall(async (request) => {
   const trade = await tradeRef.get();
   if (!trade.exists || trade.data().orgId !== profile.orgId) throw new HttpsError('not-found', 'Shift trade was not found.');
   const status = request.data.status === 'approved' ? 'approved' : 'declined';
-  if (status === 'approved') await collection(appId, 'shifts').doc(trade.data().shiftId).update({ employeeUid: trade.data().toEmployeeUid, updatedAt: new Date().toISOString(), updatedByUid: request.auth.uid });
+  if (status === 'approved') await collection(appId, 'shifts').doc(trade.data().shiftId).update({ employeeUid: trade.data().toEmployeeUid, updatedAt: new Date().toISOString(), updatedByUid: request.auth.uid, tradedFromEmployeeUid: trade.data().fromEmployeeUid });
   await tradeRef.update({ status, reviewedAt: new Date().toISOString(), reviewedByUid: request.auth.uid });
   await notification(appId, { orgId: profile.orgId, recipientUid: trade.data().fromEmployeeUid, title: `Shift trade ${status}`, body: status === 'approved' ? 'Your shift trade was approved.' : 'Your shift trade was declined.', kind: 'shift_trade', sourceId: trade.id });
+  await notification(appId, { orgId: profile.orgId, recipientUid: trade.data().toEmployeeUid, title: `Shift trade ${status}`, body: status === 'approved' ? 'A manager approved the shift trade. This shift is now on your schedule.' : 'A manager declined the shift trade.', kind: 'shift_trade', sourceId: trade.id });
   return { status };
+});
+
+export const publishShift = onCall(async (request) => {
+  const appId = request.data.appId;
+  const { profile } = await requirePermission(request, appId, 'manageSchedule');
+  const input = request.data.shift || {};
+  const employeeUid = String(input.employeeUid || '');
+  const roleId = String(input.roleId || '');
+  const startAt = String(input.startAt || '');
+  const endAt = String(input.endAt || '');
+  const start = Date.parse(startAt);
+  const end = Date.parse(endAt);
+  if (!employeeUid || !roleId || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) throw new HttpsError('invalid-argument', 'Employee, scheduled role, and a valid time range are required.');
+  const [employee, role] = await Promise.all([collection(appId, 'users').doc(employeeUid).get(), collection(appId, 'orgRoles').doc(roleId).get()]);
+  if (!employee.exists || employee.data().orgId !== profile.orgId || employee.data().role !== 'employee') throw new HttpsError('not-found', 'Employee was not found.');
+  if (!role.exists || role.data().orgId !== profile.orgId) throw new HttpsError('not-found', 'Scheduled role was not found.');
+  const shift = await collection(appId, 'shifts').add({
+    orgId: profile.orgId, employeeUid, roleId, title: String(input.title || 'Scheduled shift').slice(0, 200), startAt, endAt,
+    mealBreakMinutes: Math.max(0, Number(input.mealBreakMinutes) || 0), status: 'published', createdByUid: request.auth.uid, createdAt: new Date().toISOString()
+  });
+  await notification(appId, { orgId: profile.orgId, recipientUid: employeeUid, title: 'Schedule published', body: `${input.title || 'A shift'} was added to your schedule for ${new Date(start).toLocaleString()}.`, kind: 'schedule_published', sourceId: shift.id });
+  return { shiftId: shift.id };
 });
 
 const localDate = (date, timeZone) => {
