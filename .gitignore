@@ -30,3 +30,4 @@ Environment Variables
 .env
 .env.*
 !.env.example
+.vercel
