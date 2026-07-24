@@ -11,6 +11,7 @@ import {
   CheckCircle2, AlertCircle, ArrowRight, Home, Plus, FileText, Wand2, Trash2,
   Building2, Briefcase, Lock, UserPlus, LogOut, ChevronRight, ClipboardCheck
 } from 'lucide-react';
+import { EmployeePortal, POLICY_LIBRARY, WorkforceAdminPanels } from './workforce';
 
 // --- FIREBASE INITIALIZATION ---
 const getEnvVar = (key) => {
@@ -44,7 +45,8 @@ const DEFAULT_TEMPLATES = [
   { title: 'Non-Disclosure Agreement (NDA)', content: 'You agree to maintain the confidentiality of all proprietary information, trade secrets, and internal communications encountered during your engagement with the organization. This information may not be shared, published, or discussed with unauthorized third parties.', requiresAck: true },
   { title: 'Site Safety & Hazard Protocol', content: 'I acknowledge that I will be entering an active operational/construction zone. I agree to wear required Personal Protective Equipment (PPE) at all times, follow the instructions of the site foreman, and immediately report any safety hazards.', requiresAck: true },
   { title: 'HIPAA Volunteer Acknowledgment', content: 'I understand that I may encounter Protected Health Information (PHI). I agree to strictly adhere to all HIPAA privacy and security rules, and I will not access, use, or disclose any patient information outside the scope of my direct assigned duties.', requiresAck: true },
-  { title: 'Universal Code of Conduct', content: 'We are committed to providing a safe, inclusive, and harassment-free environment. All participants are expected to treat others with respect. Discrimination, harassment, or abusive behavior of any kind will result in immediate dismissal.', requiresAck: true }
+  { title: 'Universal Code of Conduct', content: 'We are committed to providing a safe, inclusive, and harassment-free environment. All participants are expected to treat others with respect. Discrimination, harassment, or abusive behavior of any kind will result in immediate dismissal.', requiresAck: true },
+  ...POLICY_LIBRARY
 ];
 
 const INDUSTRY_LABELS = {
@@ -72,6 +74,16 @@ export default function App() {
   const [events, setEvents] = useState([]);
   const [volunteers, setVolunteers] = useState([]);
   const [templates, setTemplates] = useState([]);
+  const [employees, setEmployees] = useState([]);
+  const [trainingTemplates, setTrainingTemplates] = useState([]);
+  const [trainingAssignments, setTrainingAssignments] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [messages, setMessages] = useState([]);
+  const [shifts, setShifts] = useState([]);
+  const [availability, setAvailability] = useState([]);
+  const [leaveRequests, setLeaveRequests] = useState([]);
+  const [timeEntries, setTimeEntries] = useState([]);
+  const [employeeInvitations, setEmployeeInvitations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dataError, setDataError] = useState('');
 
@@ -143,13 +155,28 @@ export default function App() {
       setTemplates(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
     }, reportListenerError);
 
-    if (userProfile.role !== 'admin' || !userProfile.orgId) {
+    const workforceUnsubs = [];
+    const subscribe = (target, setter) => workforceUnsubs.push(onSnapshot(target, (snapshot) => {
+      setter(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, reportListenerError));
+
+    if (userProfile.role === 'employee' && userProfile.orgId) {
+      subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'trainingAssignments'), where('employeeUid', '==', user.uid)), setTrainingAssignments);
+      subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'notifications'), where('recipientUid', '==', user.uid)), setNotifications);
+      subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'messages'), where('participantUids', 'array-contains', user.uid)), setMessages);
+      subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'shifts'), where('employeeUid', '==', user.uid)), setShifts);
+      subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'availability'), where('employeeUid', '==', user.uid)), setAvailability);
+      subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'leaveRequests'), where('employeeUid', '==', user.uid)), setLeaveRequests);
+      subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'timeEntries'), where('employeeUid', '==', user.uid)), setTimeEntries);
       setVolunteers([]);
       return () => {
-        unsubOrgs();
-        unsubEvents();
-        unsubTemplates();
+        unsubOrgs(); unsubEvents(); unsubTemplates(); workforceUnsubs.forEach(unsubscribe => unsubscribe());
       };
+    }
+
+    if (userProfile.role !== 'admin' || !userProfile.orgId) {
+      setVolunteers([]);
+      return () => { unsubOrgs(); unsubEvents(); unsubTemplates(); };
     }
 
     const volunteersRef = query(
@@ -160,19 +187,137 @@ export default function App() {
       setVolunteers(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
     }, reportListenerError);
 
+    subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'users'), where('orgId', '==', userProfile.orgId)), (profiles) => setEmployees(profiles.filter(profile => profile.role === 'employee')));
+    subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'trainingTemplates'), where('orgId', '==', userProfile.orgId)), setTrainingTemplates);
+    subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'trainingAssignments'), where('orgId', '==', userProfile.orgId)), setTrainingAssignments);
+    subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'employeeInvitations'), where('orgId', '==', userProfile.orgId)), setEmployeeInvitations);
+    subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'messages'), where('orgId', '==', userProfile.orgId)), setMessages);
+    subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'shifts'), where('orgId', '==', userProfile.orgId)), setShifts);
+    subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'timeEntries'), where('orgId', '==', userProfile.orgId)), setTimeEntries);
+    subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'leaveRequests'), where('orgId', '==', userProfile.orgId)), setLeaveRequests);
+
     return () => {
       unsubOrgs();
       unsubEvents();
       unsubTemplates();
       unsubVolunteers();
+      workforceUnsubs.forEach(unsubscribe => unsubscribe());
     };
-  }, [userProfile]);
+  }, [user, userProfile]);
 
   const handleLogout = async () => {
     await signOut(auth);
     setUserProfile(null);
     setDataError('');
   };
+
+  const callWorkforce = async (name, data) => {
+    const currentUser = auth.currentUser;
+    if (!currentUser) throw new Error('Please sign in again before continuing.');
+
+    // Use Firebase's callable HTTPS protocol directly. This keeps sign-in
+    // independent of the optional Functions SDK on static deployments.
+    const token = await currentUser.getIdToken();
+    const response = await fetch(
+      `https://us-central1-${firebaseConfig.projectId}.cloudfunctions.net/${name}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ data: { appId, ...data } }),
+      },
+    );
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload.error) {
+      throw new Error(payload.error?.message || 'That action could not be completed.');
+    }
+    return payload.data ?? payload.result;
+  };
+
+  const handleInviteEmployee = async (email) => {
+    await callWorkforce('createEmployeeInvitation', { email });
+  };
+
+  const handleAcceptInvitation = async () => {
+    await callWorkforce('acceptEmployeeInvitation', {});
+  };
+
+  const handleAddTrainingTemplate = async (template) => {
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'trainingTemplates'), {
+      ...template,
+      orgId: userProfile.orgId,
+      createdByUid: user.uid,
+      createdAt: new Date().toISOString()
+    });
+  };
+
+  const handleAssignTraining = async ({ employeeUid, templateId, dueMode, dueAt, dueOffsetDays }) => {
+    await callWorkforce('assignTraining', {
+      employeeUid,
+      templateId,
+      dueAt: dueMode === 'specific_date' ? dueAt : null,
+      dueOffsetDays: dueMode === 'start_date_offset' ? Number(dueOffsetDays) : null,
+    });
+  };
+
+  const handleSubmitQuiz = async (assignment, answers) => {
+    await callWorkforce('submitTrainingQuiz', { assignmentId: assignment.id, answers });
+  };
+
+  const handleMessage = async ({ recipientUid, body }) => {
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'messages'), {
+      orgId: userProfile.orgId,
+      senderUid: user.uid,
+      recipientUid,
+      participantUids: [user.uid, recipientUid],
+      body,
+      createdAt: new Date().toISOString()
+    });
+  };
+
+  const handleEmployeeMessage = async (body) => {
+    const adminUid = organizationForUser?.adminUid;
+    if (!adminUid) throw new Error('Your organization administrator is not available.');
+    return handleMessage({ recipientUid: adminUid, body });
+  };
+
+  const handleMarkNotificationRead = async (notificationId) => {
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'notifications', notificationId), { readAt: new Date().toISOString() }, { merge: true });
+  };
+
+  const handleCreateShift = async (shift) => {
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'shifts'), { ...shift, orgId: userProfile.orgId, status: 'published', createdByUid: user.uid, createdAt: new Date().toISOString() });
+  };
+
+  const handleAvailability = async (entry) => {
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'availability'), { ...entry, orgId: userProfile.orgId, employeeUid: user.uid, createdAt: new Date().toISOString() });
+  };
+
+  const handleLeaveRequest = async (request) => {
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'leaveRequests'), { ...request, orgId: userProfile.orgId, employeeUid: user.uid, status: 'pending', createdAt: new Date().toISOString() });
+  };
+
+  const handleClock = async (action) => {
+    await callWorkforce('clockAction', { action });
+  };
+
+  const handleReviewTime = async (timeEntryId, status) => {
+    await callWorkforce('reviewTimeEntry', { timeEntryId, status });
+  };
+
+  const handleReviewLeave = async (leaveRequestId, status, managerNote = '') => {
+    await callWorkforce('reviewLeaveRequest', { leaveRequestId, status, managerNote });
+  };
+
+  const handleLoadPolicies = async () => {
+    await Promise.all(POLICY_LIBRARY.map(template => addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'documentTemplates'), {
+      ...template, orgId: userProfile.orgId, createdAt: new Date().toISOString()
+    })));
+  };
+
+  const organizationForUser = organizations.find(organization => organization.id === userProfile?.orgId);
 
   const AuthScreen = () => {
     const [isLogin, setIsLogin] = useState(true);
@@ -196,6 +341,10 @@ export default function App() {
               name: formData.orgName,
               industry: formData.industry,
               adminUid: cred.user.uid,
+              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York',
+              dueSoonDays: 7,
+              defaultPassThreshold: 80,
+              features: { training: true, messaging: true, scheduling: true, timeClock: true },
               createdAt: new Date().toISOString()
             });
 
@@ -244,6 +393,10 @@ export default function App() {
               name: formData.orgName,
               industry: formData.industry,
               adminUid: userUid,
+              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York',
+              dueSoonDays: 7,
+              defaultPassThreshold: 80,
+              features: { training: true, messaging: true, scheduling: true, timeClock: true },
               createdAt: new Date().toISOString()
             });
 
@@ -260,7 +413,7 @@ export default function App() {
           const lastName = nameParts.slice(1).join(" ") || "";
 
           await setDoc(userDocRef, {
-            role: (!isLogin && roleTab === 'admin') ? 'admin' : 'volunteer',
+            role: !isLogin ? roleTab : 'volunteer',
             firstName: firstName,
             lastName: lastName,
             email: result.user.email || "",
@@ -288,8 +441,9 @@ export default function App() {
 
           {!isLogin && (
             <div className="flex border-b border-slate-200 bg-slate-50">
-              <button onClick={() => setRoleTab('volunteer')} className={`flex-1 py-3 text-sm font-bold transition-colors ${roleTab === 'volunteer' ? 'border-b-2 border-indigo-600 text-indigo-700' : 'text-slate-500 hover:bg-slate-100'}`}>Volunteer / User</button>
-              <button onClick={() => setRoleTab('admin')} className={`flex-1 py-3 text-sm font-bold transition-colors ${roleTab === 'admin' ? 'border-b-2 border-indigo-600 text-indigo-700' : 'text-slate-500 hover:bg-slate-100'}`}>Organization Admin</button>
+              <button onClick={() => setRoleTab('volunteer')} className={`flex-1 py-3 text-xs font-bold transition-colors ${roleTab === 'volunteer' ? 'border-b-2 border-indigo-600 text-indigo-700' : 'text-slate-500 hover:bg-slate-100'}`}>Volunteer</button>
+              <button onClick={() => setRoleTab('employee')} className={`flex-1 py-3 text-xs font-bold transition-colors ${roleTab === 'employee' ? 'border-b-2 border-indigo-600 text-indigo-700' : 'text-slate-500 hover:bg-slate-100'}`}>Employee</button>
+              <button onClick={() => setRoleTab('admin')} className={`flex-1 py-3 text-xs font-bold transition-colors ${roleTab === 'admin' ? 'border-b-2 border-indigo-600 text-indigo-700' : 'text-slate-500 hover:bg-slate-100'}`}>Admin</button>
             </div>
           )}
 
@@ -457,6 +611,7 @@ export default function App() {
         <div className="max-w-6xl mx-auto p-6 animate-in fade-in zoom-in-95 duration-300 mt-4">
           <div className="flex gap-3 mb-8 border-b border-slate-200 pb-4">
             <button onClick={() => setAdminTab('dashboard')} className={`px-4 py-2 rounded-lg font-bold transition-colors ${adminTab === 'dashboard' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'}`}>Dashboard & Rosters</button>
+            <button onClick={() => setAdminTab('workforce')} className={`px-4 py-2 rounded-lg font-bold flex items-center gap-2 transition-colors ${adminTab === 'workforce' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'}`}><Users size={16} /> Workforce</button>
             <button onClick={() => setAdminTab('wizard')} className={`px-4 py-2 rounded-lg font-bold flex items-center gap-2 transition-colors ${adminTab === 'wizard' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'}`}><Wand2 size={16} /> Template Wizard</button>
           </div>
 
@@ -534,6 +689,26 @@ export default function App() {
                 </div>
               </div>
             </>
+          ) : adminTab === 'workforce' ? (
+            <WorkforceAdminPanels
+              organization={myOrg}
+              employees={employees}
+              trainingTemplates={trainingTemplates}
+              assignments={trainingAssignments}
+              invitations={employeeInvitations}
+              shifts={shifts}
+              timeEntries={timeEntries}
+              leaveRequests={leaveRequests}
+              messages={messages}
+              onInvite={handleInviteEmployee}
+              onAddTemplate={handleAddTrainingTemplate}
+              onAssign={handleAssignTraining}
+              onMessage={handleMessage}
+              onShift={handleCreateShift}
+              onReviewTime={handleReviewTime}
+              onReviewLeave={handleReviewLeave}
+              onLoadPolicies={handleLoadPolicies}
+            />
           ) : (
             <div className="grid lg:grid-cols-2 gap-8 animate-in slide-in-from-right-8 duration-300">
               <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-6">
@@ -797,7 +972,25 @@ export default function App() {
 
   return (
     <div className="font-sans antialiased text-slate-900 selection:bg-indigo-200">
-      {userProfile.role === 'admin' ? <AdminDashboard /> : <VolunteerPortal />}
+      {userProfile.role === 'admin' ? <AdminDashboard /> : userProfile.role === 'employee' ? <EmployeePortal
+        profile={userProfile}
+        user={user}
+        organization={organizationForUser}
+        assignments={trainingAssignments}
+        notifications={notifications}
+        messages={messages}
+        shifts={shifts}
+        timeEntries={timeEntries}
+        leaveRequests={leaveRequests}
+        availability={availability}
+        onMessage={handleEmployeeMessage}
+        onReadNotification={handleMarkNotificationRead}
+        onLeaveRequest={handleLeaveRequest}
+        onAvailability={handleAvailability}
+        onClock={handleClock}
+        onQuiz={handleSubmitQuiz}
+        onAcceptInvite={handleAcceptInvitation}
+      /> : <VolunteerPortal />}
     </div>
   );
 }

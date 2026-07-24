@@ -2,17 +2,36 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() {
-      return request.auth != null;
+    function signedIn() { return request.auth != null; }
+    function userProfile(appId, uid) {
+      return get(/databases/$(database)/documents/artifacts/$(appId)/public/data/users/$(uid)).data;
     }
-
     function isOrgAdmin(appId, orgId) {
       return signedIn()
         && get(/databases/$(database)/documents/artifacts/$(appId)/public/data/organizations/$(orgId)).data.adminUid == request.auth.uid;
     }
+    function isSameOrgUser(appId, orgId, uid) {
+      return signedIn() && userProfile(appId, uid).orgId == orgId;
+    }
+    function isOrgAdminUid(appId, orgId, uid) {
+      return get(/databases/$(database)/documents/artifacts/$(appId)/public/data/organizations/$(orgId)).data.adminUid == uid;
+    }
 
     match /artifacts/{appId}/public/data/users/{userId} {
-      allow get, create, update: if signedIn() && request.auth.uid == userId;
+      allow get, list: if signedIn() && (request.auth.uid == userId || isOrgAdmin(appId, resource.data.orgId));
+      allow create: if signedIn() && request.auth.uid == userId && (
+        (request.resource.data.role == 'admin'
+          && request.resource.data.orgId != null
+          && isOrgAdminUid(appId, request.resource.data.orgId, request.auth.uid))
+        || ((request.resource.data.role == 'volunteer' || request.resource.data.role == 'employee')
+          && request.resource.data.orgId == null)
+      );
+      allow update: if signedIn() && (
+        (request.auth.uid == userId
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.orgId == resource.data.orgId)
+        || isOrgAdmin(appId, resource.data.orgId)
+      );
     }
 
     match /artifacts/{appId}/public/data/organizations/{orgId} {
@@ -21,24 +40,80 @@ service cloud.firestore {
       allow update, delete: if signedIn() && resource.data.adminUid == request.auth.uid;
     }
 
-    match /artifacts/{appId}/public/data/{collectionName}/{documentId} {
-      allow read: if signedIn() && collectionName in ['events', 'documentTemplates'];
-      allow create: if signedIn()
-        && collectionName in ['events', 'documentTemplates']
-        && isOrgAdmin(appId, request.resource.data.orgId);
-      allow update: if signedIn()
-        && collectionName in ['events', 'documentTemplates']
-        && isOrgAdmin(appId, resource.data.orgId)
-        && request.resource.data.orgId == resource.data.orgId;
-      allow delete: if signedIn()
-        && collectionName in ['events', 'documentTemplates']
-        && isOrgAdmin(appId, resource.data.orgId);
+    match /artifacts/{appId}/public/data/documentTemplates/{documentId} {
+      allow read: if signedIn();
+      allow create: if isOrgAdmin(appId, request.resource.data.orgId);
+      allow update, delete: if isOrgAdmin(appId, resource.data.orgId);
+    }
+
+    match /artifacts/{appId}/public/data/events/{eventId} {
+      allow read: if signedIn();
+      allow create: if isOrgAdmin(appId, request.resource.data.orgId);
+      allow update, delete: if isOrgAdmin(appId, resource.data.orgId);
     }
 
     match /artifacts/{appId}/public/data/volunteers/{volunteerId} {
       allow create: if signedIn() && request.resource.data.volunteerUid == request.auth.uid;
-      allow get, list: if signedIn()
-        && (resource.data.volunteerUid == request.auth.uid || isOrgAdmin(appId, resource.data.orgId));
+      allow get, list: if signedIn() && (resource.data.volunteerUid == request.auth.uid || isOrgAdmin(appId, resource.data.orgId));
+    }
+
+    match /artifacts/{appId}/public/data/trainingTemplates/{templateId} {
+      allow read: if signedIn() && isSameOrgUser(appId, resource.data.orgId, request.auth.uid);
+      allow create: if isOrgAdmin(appId, request.resource.data.orgId);
+      allow update, delete: if isOrgAdmin(appId, resource.data.orgId);
+    }
+
+    match /artifacts/{appId}/public/data/trainingAssignments/{assignmentId} {
+      allow get, list: if signedIn() && (resource.data.employeeUid == request.auth.uid || isOrgAdmin(appId, resource.data.orgId));
+    }
+
+    match /artifacts/{appId}/public/data/employeeInvitations/{invitationId} {
+      allow get, list: if isOrgAdmin(appId, resource.data.orgId);
+    }
+
+    match /artifacts/{appId}/public/data/messages/{messageId} {
+      allow get, list: if signedIn() && request.auth.uid in resource.data.participantUids;
+      allow create: if signedIn()
+        && request.auth.uid == request.resource.data.senderUid
+        && isSameOrgUser(appId, request.resource.data.orgId, request.resource.data.recipientUid)
+        && (isOrgAdmin(appId, request.resource.data.orgId)
+          || isOrgAdminUid(appId, request.resource.data.orgId, request.resource.data.recipientUid))
+        && request.auth.uid in request.resource.data.participantUids;
+    }
+
+    match /artifacts/{appId}/public/data/notifications/{notificationId} {
+      allow get, list: if signedIn() && resource.data.recipientUid == request.auth.uid;
+      allow update: if signedIn() && resource.data.recipientUid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readAt']);
+    }
+
+    match /artifacts/{appId}/public/data/shifts/{shiftId} {
+      allow get, list: if signedIn() && (resource.data.employeeUid == request.auth.uid || isOrgAdmin(appId, resource.data.orgId));
+      allow create: if isOrgAdmin(appId, request.resource.data.orgId);
+      allow update, delete: if isOrgAdmin(appId, resource.data.orgId);
+    }
+
+    match /artifacts/{appId}/public/data/availability/{availabilityId} {
+      allow get, list: if signedIn() && (resource.data.employeeUid == request.auth.uid || isOrgAdmin(appId, resource.data.orgId));
+      allow create: if signedIn() && request.resource.data.employeeUid == request.auth.uid
+        && isSameOrgUser(appId, request.resource.data.orgId, request.auth.uid);
+      allow update, delete: if signedIn() && resource.data.employeeUid == request.auth.uid
+        && isSameOrgUser(appId, resource.data.orgId, request.auth.uid);
+    }
+
+    match /artifacts/{appId}/public/data/leaveRequests/{requestId} {
+      allow get, list: if signedIn() && (resource.data.employeeUid == request.auth.uid || isOrgAdmin(appId, resource.data.orgId));
+      allow create: if signedIn() && request.resource.data.employeeUid == request.auth.uid
+        && isSameOrgUser(appId, request.resource.data.orgId, request.auth.uid);
+      allow update: if signedIn() && (resource.data.employeeUid == request.auth.uid || isOrgAdmin(appId, resource.data.orgId));
+    }
+
+    match /artifacts/{appId}/public/data/timeEntries/{entryId} {
+      allow get, list: if signedIn() && (resource.data.employeeUid == request.auth.uid || isOrgAdmin(appId, resource.data.orgId));
+    }
+
+    match /artifacts/{appId}/public/data/quizAttempts/{attemptId} {
+      allow get, list: if signedIn() && (resource.data.employeeUid == request.auth.uid || isOrgAdmin(appId, resource.data.orgId));
     }
   }
 }
