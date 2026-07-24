@@ -5,7 +5,7 @@ import {
   createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut,
   GoogleAuthProvider, signInWithPopup 
 } from 'firebase/auth';
-import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, addDoc, getDoc } from 'firebase/firestore';
+import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, addDoc, getDoc, query, where } from 'firebase/firestore';
 import { 
   ClipboardList, Users, ShieldCheck, Calendar, FileSignature, 
   CheckCircle2, AlertCircle, ArrowRight, Home, Plus, FileText, Wand2, Trash2,
@@ -73,6 +73,7 @@ export default function App() {
   const [volunteers, setVolunteers] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [dataError, setDataError] = useState('');
 
   useEffect(() => {
     const initAuth = async () => {
@@ -91,9 +92,12 @@ export default function App() {
 
     const unsubscribeAuth = onAuthStateChanged(auth, (u) => {
       setUser(u);
+      setDataError('');
       if (!u) {
         setUserProfile(null);
         setLoading(false);
+      } else {
+        setLoading(true);
       }
     });
 
@@ -103,47 +107,71 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
 
-    const usersRef = collection(db, 'artifacts', appId, 'public', 'data', 'users');
-    const orgsRef = collection(db, 'artifacts', appId, 'public', 'data', 'organizations');
-    const eventsRef = collection(db, 'artifacts', appId, 'public', 'data', 'events');
-    const volunteersRef = collection(db, 'artifacts', appId, 'public', 'data', 'volunteers');
-    const templatesRef = collection(db, 'artifacts', appId, 'public', 'data', 'documentTemplates');
-
-    const unsubUsers = onSnapshot(usersRef, (snapshot) => {
-      const users = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-      const profile = users.find(u => u.id === user.uid);
-      setUserProfile(profile || null);
-    });
-
-    const unsubOrgs = onSnapshot(orgsRef, (snapshot) => {
-      setOrganizations(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
-
-    const unsubEvents = onSnapshot(eventsRef, (snapshot) => {
-      setEvents(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
-
-    const unsubTemplates = onSnapshot(templatesRef, (snapshot) => {
-      setTemplates(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-    });
-
-    const unsubVolunteers = onSnapshot(volunteersRef, (snapshot) => {
-      setVolunteers(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+    const profileRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', user.uid);
+    const unsubscribeProfile = onSnapshot(profileRef, (snapshot) => {
+      setUserProfile(snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null);
+      setLoading(false);
+    }, (error) => {
+      console.error('Unable to load the signed-in user profile:', error);
+      setDataError('ReadyRoster could not read your profile. Please check the Firestore security rules and try again.');
       setLoading(false);
     });
 
+    return unsubscribeProfile;
+  }, [user]);
+
+  useEffect(() => {
+    if (!userProfile) return;
+
+    const orgsRef = collection(db, 'artifacts', appId, 'public', 'data', 'organizations');
+    const eventsRef = collection(db, 'artifacts', appId, 'public', 'data', 'events');
+    const templatesRef = collection(db, 'artifacts', appId, 'public', 'data', 'documentTemplates');
+    const reportListenerError = (error) => {
+      console.error('Unable to load ReadyRoster data:', error);
+      setDataError('ReadyRoster could not load its shared data. Please check the Firestore security rules and try again.');
+    };
+
+    const unsubOrgs = onSnapshot(orgsRef, (snapshot) => {
+      setOrganizations(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, reportListenerError);
+
+    const unsubEvents = onSnapshot(eventsRef, (snapshot) => {
+      setEvents(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, reportListenerError);
+
+    const unsubTemplates = onSnapshot(templatesRef, (snapshot) => {
+      setTemplates(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, reportListenerError);
+
+    if (userProfile.role !== 'admin' || !userProfile.orgId) {
+      setVolunteers([]);
+      return () => {
+        unsubOrgs();
+        unsubEvents();
+        unsubTemplates();
+      };
+    }
+
+    const volunteersRef = query(
+      collection(db, 'artifacts', appId, 'public', 'data', 'volunteers'),
+      where('orgId', '==', userProfile.orgId)
+    );
+    const unsubVolunteers = onSnapshot(volunteersRef, (snapshot) => {
+      setVolunteers(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, reportListenerError);
+
     return () => {
-      unsubUsers();
       unsubOrgs();
       unsubEvents();
       unsubTemplates();
       unsubVolunteers();
     };
-  }, [user]);
+  }, [userProfile]);
 
   const handleLogout = async () => {
     await signOut(auth);
     setUserProfile(null);
+    setDataError('');
   };
 
   const AuthScreen = () => {
@@ -171,10 +199,10 @@ export default function App() {
               createdAt: new Date().toISOString()
             });
 
-            DEFAULT_TEMPLATES.forEach(async (t) => {
+            await Promise.all(DEFAULT_TEMPLATES.map(async (t) => {
               const tmplId = 'doc_' + Math.random().toString(36).substr(2, 9);
               await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'documentTemplates', tmplId), { ...t, orgId });
-            });
+            }));
           }
 
           await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', cred.user.uid), {
@@ -202,6 +230,11 @@ export default function App() {
         const userDocSnap = await getDoc(userDocRef);
 
         if (!userDocSnap.exists()) {
+          if (isLogin) {
+            await signOut(auth);
+            throw new Error('No ReadyRoster account exists for this Google account. Choose Sign Up to create one.');
+          }
+
           // New User Registration
           let orgId = null;
 
@@ -219,10 +252,10 @@ export default function App() {
               createdAt: new Date().toISOString()
             });
 
-            DEFAULT_TEMPLATES.forEach(async (t) => {
+            await Promise.all(DEFAULT_TEMPLATES.map(async (t) => {
               const tmplId = 'doc_' + Math.random().toString(36).substr(2, 9);
               await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'documentTemplates', tmplId), { ...t, orgId });
-            });
+            }));
           }
 
           // Extract first and last names from Google display name
@@ -753,6 +786,17 @@ export default function App() {
   };
 
   if (loading) return <div className="min-h-screen bg-slate-50 flex items-center justify-center font-bold text-slate-400 tracking-wider">LOADING SYSTEM...</div>;
+
+  if (dataError) return (
+    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+      <div className="w-full max-w-md rounded-2xl bg-white p-8 text-center shadow-2xl">
+        <AlertCircle className="mx-auto mb-4 text-red-500" size={36} />
+        <h1 className="text-xl font-black text-slate-800">Unable to load ReadyRoster</h1>
+        <p className="mt-3 text-sm text-slate-600">{dataError}</p>
+        <button onClick={handleLogout} className="mt-6 rounded-lg bg-slate-900 px-5 py-3 text-sm font-bold text-white transition-colors hover:bg-slate-800">Sign out and try again</button>
+      </div>
+    </div>
+  );
 
   if (!user || !userProfile) return <AuthScreen />;
 
