@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { EmployeePortal, POLICY_LIBRARY, WorkforceAdminPanels } from './workforce';
 import { EmployeeExpansionPanel, WorkforceExpansionPanels } from './workforceExpansion';
+import { ApplicantPortal, HiringPanel } from './hiring';
 
 // --- FIREBASE INITIALIZATION ---
 const getEnvVar = (key) => {
@@ -100,6 +101,8 @@ export default function App() {
   const [promotions, setPromotions] = useState([]);
   const [shiftTrades, setShiftTrades] = useState([]);
   const [holidays, setHolidays] = useState([]);
+  const [jobPostings, setJobPostings] = useState([]);
+  const [applications, setApplications] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dataError, setDataError] = useState('');
 
@@ -154,6 +157,7 @@ export default function App() {
     const orgsRef = collection(db, 'artifacts', appId, 'public', 'data', 'organizations');
     const eventsRef = collection(db, 'artifacts', appId, 'public', 'data', 'events');
     const templatesRef = collection(db, 'artifacts', appId, 'public', 'data', 'documentTemplates');
+    const jobsRef = collection(db, 'artifacts', appId, 'public', 'data', 'jobPostings');
     const reportListenerError = (error) => {
       console.error('Unable to load ReadyRoster data:', error);
       setDataError('ReadyRoster could not load its shared data. Please check the Firestore security rules and try again.');
@@ -170,6 +174,7 @@ export default function App() {
     const unsubTemplates = onSnapshot(templatesRef, (snapshot) => {
       setTemplates(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
     }, reportListenerError);
+    const unsubJobs = onSnapshot(jobsRef, (snapshot) => setJobPostings(snapshot.docs.map(d => ({ id: d.id, ...d.data() }))), reportListenerError);
 
     const workforceUnsubs = [];
     const subscribe = (target, setter) => workforceUnsubs.push(onSnapshot(target, (snapshot) => {
@@ -189,13 +194,18 @@ export default function App() {
       subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'holidays'), where('orgId', '==', userProfile.orgId)), setHolidays);
       setVolunteers([]);
       return () => {
-        unsubOrgs(); unsubEvents(); unsubTemplates(); workforceUnsubs.forEach(unsubscribe => unsubscribe());
+        unsubOrgs(); unsubEvents(); unsubTemplates(); unsubJobs(); workforceUnsubs.forEach(unsubscribe => unsubscribe());
       };
+    }
+
+    if (userProfile.role === 'applicant') {
+      subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'applications'), where('applicantUid', '==', user.uid)), setApplications);
+      return () => { unsubOrgs(); unsubEvents(); unsubTemplates(); unsubJobs(); workforceUnsubs.forEach(unsubscribe => unsubscribe()); };
     }
 
     if (userProfile.role !== 'admin' || !userProfile.orgId) {
       setVolunteers([]);
-      return () => { unsubOrgs(); unsubEvents(); unsubTemplates(); };
+      return () => { unsubOrgs(); unsubEvents(); unsubTemplates(); unsubJobs(); };
     }
 
     const volunteersRef = query(
@@ -218,11 +228,13 @@ export default function App() {
     subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'promotions'), where('orgId', '==', userProfile.orgId)), setPromotions);
     subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'shiftTrades'), where('orgId', '==', userProfile.orgId)), setShiftTrades);
     subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'holidays'), where('orgId', '==', userProfile.orgId)), setHolidays);
+    subscribe(query(collection(db, 'artifacts', appId, 'public', 'data', 'applications'), where('orgId', '==', userProfile.orgId)), setApplications);
 
     return () => {
       unsubOrgs();
       unsubEvents();
       unsubTemplates();
+      unsubJobs();
       unsubVolunteers();
       workforceUnsubs.forEach(unsubscribe => unsubscribe());
     };
@@ -260,11 +272,20 @@ export default function App() {
   };
 
   const handleInviteEmployee = async (email) => {
-    await callWorkforce('createEmployeeInvitation', { email });
+    return callWorkforce('createEmployeeInvitation', { email });
   };
 
   const handleAcceptInvitation = async () => {
-    await callWorkforce('acceptEmployeeInvitation', {});
+    const invitationId = new URLSearchParams(window.location.search).get('employeeInvite');
+    await callWorkforce('acceptEmployeeInvitation', { invitationId });
+  };
+
+  const handleCreateJob = async (job) => addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'jobPostings'), { ...job, orgId: userProfile.orgId, status: 'open', createdByUid: user.uid, createdAt: new Date().toISOString() });
+  const handleUpdateApplication = async (applicationId, changes) => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'applications', applicationId), { ...changes, updatedAt: new Date().toISOString(), updatedByUid: user.uid }, { merge: true });
+  const handleSubmitApplication = async (form) => {
+    const job = jobPostings.find(item => item.id === form.jobId);
+    if (!job || job.status !== 'open') throw new Error('This application is no longer accepting submissions.');
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'applications'), { ...form, orgId: job.orgId, applicantUid: user.uid, name: `${userProfile.firstName || ''} ${userProfile.lastName || ''}`.trim(), email: userProfile.email || user.email || '', stage: 'new', submittedAt: new Date().toISOString() });
   };
 
   const handleAddTrainingTemplate = async (template) => {
@@ -400,8 +421,11 @@ export default function App() {
   const organizationForUser = organizations.find(organization => organization.id === userProfile?.orgId);
 
   const AuthScreen = () => {
-    const [isLogin, setIsLogin] = useState(true);
-    const [roleTab, setRoleTab] = useState('volunteer');
+    const employeeInviteId = new URLSearchParams(window.location.search).get('employeeInvite');
+    const applicationJobId = new URLSearchParams(window.location.search).get('apply');
+    const forcedRole = employeeInviteId ? 'employee' : applicationJobId ? 'applicant' : null;
+    const [isLogin, setIsLogin] = useState(Boolean(!forcedRole));
+    const [roleTab, setRoleTab] = useState(forcedRole || 'volunteer');
     const [formData, setFormData] = useState({ email: '', password: '', firstName: '', lastName: '', orgName: '', industry: 'not_specified' });
     const [error, setError] = useState('');
 
@@ -439,7 +463,8 @@ export default function App() {
             firstName: formData.firstName,
             lastName: formData.lastName,
             email: formData.email,
-            orgId: orgId
+            orgId: orgId,
+            applicationTargetJobId: roleTab === 'applicant' ? applicationJobId : null
           });
         }
       } catch (err) {
@@ -497,7 +522,8 @@ export default function App() {
             firstName: firstName,
             lastName: lastName,
             email: result.user.email || "",
-            orgId: orgId
+            orgId: orgId,
+            applicationTargetJobId: !isLogin && roleTab === 'applicant' ? applicationJobId : null
           });
         }
       } catch (err) {
@@ -521,13 +547,13 @@ export default function App() {
 
           {!isLogin && (
             <div className="flex border-b border-slate-200 bg-slate-50">
-              <button onClick={() => setRoleTab('volunteer')} className={`flex-1 py-3 text-xs font-bold transition-colors ${roleTab === 'volunteer' ? 'border-b-2 border-indigo-600 text-indigo-700' : 'text-slate-500 hover:bg-slate-100'}`}>Volunteer</button>
-              <button onClick={() => setRoleTab('employee')} className={`flex-1 py-3 text-xs font-bold transition-colors ${roleTab === 'employee' ? 'border-b-2 border-indigo-600 text-indigo-700' : 'text-slate-500 hover:bg-slate-100'}`}>Employee</button>
-              <button onClick={() => setRoleTab('admin')} className={`flex-1 py-3 text-xs font-bold transition-colors ${roleTab === 'admin' ? 'border-b-2 border-indigo-600 text-indigo-700' : 'text-slate-500 hover:bg-slate-100'}`}>Admin</button>
+              {!forcedRole && <><button onClick={() => setRoleTab('volunteer')} className={`flex-1 py-3 text-xs font-bold transition-colors ${roleTab === 'volunteer' ? 'border-b-2 border-indigo-600 text-indigo-700' : 'text-slate-500 hover:bg-slate-100'}`}>Volunteer</button><button onClick={() => setRoleTab('employee')} className={`flex-1 py-3 text-xs font-bold transition-colors ${roleTab === 'employee' ? 'border-b-2 border-indigo-600 text-indigo-700' : 'text-slate-500 hover:bg-slate-100'}`}>Employee</button><button onClick={() => setRoleTab('admin')} className={`flex-1 py-3 text-xs font-bold transition-colors ${roleTab === 'admin' ? 'border-b-2 border-indigo-600 text-indigo-700' : 'text-slate-500 hover:bg-slate-100'}`}>Admin</button></>}
             </div>
           )}
 
           <div className="p-6">
+            {employeeInviteId && <div className="mb-4 rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-900"><strong>You were invited as an employee.</strong> Create your account with the invited email; your organization invitation will be ready to accept next.</div>}
+            {applicationJobId && <div className="mb-4 rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm text-indigo-900"><strong>Start your application.</strong> Create an applicant account to complete the organization’s application form.</div>}
             {error && <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm mb-4 border border-red-200">{error}</div>}
             
             <form onSubmit={handleAuth} className="space-y-4">
@@ -809,6 +835,7 @@ export default function App() {
               onSaveTemplateFields={handleSaveTemplateFields}
               onExportTimesheets={handleExportTimesheets}
             />
+            <HiringPanel organization={myOrg} jobs={jobPostings.filter(job => job.orgId === userProfile.orgId)} applications={applications} onCreateJob={handleCreateJob} onUpdateApplication={handleUpdateApplication} onInviteApplicant={handleInviteEmployee} />
             </>
           ) : (
             <div className="grid lg:grid-cols-2 gap-8 animate-in slide-in-from-right-8 duration-300">
@@ -1077,7 +1104,7 @@ export default function App() {
 
   return (
     <div className="font-sans antialiased text-slate-900 selection:bg-indigo-200">
-      {userProfile.role === 'admin' ? <AdminDashboard /> : userProfile.role === 'employee' ? <>
+      {userProfile.role === 'admin' ? <AdminDashboard /> : userProfile.role === 'applicant' ? <ApplicantPortal profile={userProfile} jobs={jobPostings} onSubmit={handleSubmitApplication} /> : userProfile.role === 'employee' ? <>
         <EmployeePortal
         profile={userProfile}
         user={user}

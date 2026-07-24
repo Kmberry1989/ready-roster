@@ -23,7 +23,7 @@ service cloud.firestore {
         (request.resource.data.role == 'admin'
           && request.resource.data.orgId != null
           && isOrgAdminUid(appId, request.resource.data.orgId, request.auth.uid))
-        || ((request.resource.data.role == 'volunteer' || request.resource.data.role == 'employee')
+        || ((request.resource.data.role == 'volunteer' || request.resource.data.role == 'employee' || request.resource.data.role == 'applicant')
           && request.resource.data.orgId == null)
       );
       allow update: if signedIn() && (
@@ -69,6 +69,20 @@ service cloud.firestore {
 
     match /artifacts/{appId}/public/data/employeeInvitations/{invitationId} {
       allow get, list: if isOrgAdmin(appId, resource.data.orgId);
+    }
+
+    match /artifacts/{appId}/public/data/jobPostings/{jobId} {
+      allow get, list: if signedIn();
+      allow create: if isOrgAdmin(appId, request.resource.data.orgId);
+      allow update, delete: if isOrgAdmin(appId, resource.data.orgId);
+    }
+
+    match /artifacts/{appId}/public/data/applications/{applicationId} {
+      allow create: if signedIn()
+        && request.resource.data.applicantUid == request.auth.uid
+        && get(/databases/$(database)/documents/artifacts/$(appId)/public/data/jobPostings/$(request.resource.data.jobId)).data.orgId == request.resource.data.orgId;
+      allow get, list: if signedIn() && (resource.data.applicantUid == request.auth.uid || isOrgAdmin(appId, resource.data.orgId));
+      allow update: if isOrgAdmin(appId, resource.data.orgId);
     }
 
     match /artifacts/{appId}/public/data/messages/{messageId} {

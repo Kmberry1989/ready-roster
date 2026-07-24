@@ -57,9 +57,10 @@ export const acceptEmployeeInvitation = onCall(async (request) => {
   const auth = await requireUser(request);
   const email = String(auth.token.email || '').toLowerCase();
   if (!email) throw new HttpsError('failed-precondition', 'Your account needs a verified email to accept an invitation.');
-  const invitations = await collection(appId, 'employeeInvitations').where('email', '==', email).where('status', '==', 'pending').limit(1).get();
-  if (invitations.empty) throw new HttpsError('not-found', 'No pending invitation was found for this account.');
-  const invitation = invitations.docs[0];
+  const linkedInvitationId = String(request.data.invitationId || '');
+  const invitations = linkedInvitationId ? null : await collection(appId, 'employeeInvitations').where('email', '==', email).where('status', '==', 'pending').limit(1).get();
+  const invitation = linkedInvitationId ? await collection(appId, 'employeeInvitations').doc(linkedInvitationId).get() : invitations.docs[0];
+  if (!invitation?.exists || invitation.data().status !== 'pending' || invitation.data().email !== email) throw new HttpsError('not-found', 'No pending invitation was found for this account.');
   const data = invitation.data();
   await db.runTransaction(async (transaction) => {
     transaction.set(collection(appId, 'users').doc(auth.uid), { role: 'employee', orgId: data.orgId, email, joinedAt: new Date().toISOString() }, { merge: true });
