@@ -741,6 +741,7 @@ export default function App() {
             <WorkforceAdminPanels
               organization={myOrg}
               employees={employees}
+              roles={orgRoles}
               trainingTemplates={trainingTemplates}
               assignments={trainingAssignments}
               invitations={employeeInvitations}
@@ -836,6 +837,7 @@ export default function App() {
     const [formData, setFormData] = useState({ emergencyName: '', emergencyPhone: '' });
     const [signature, setSignature] = useState('');
     const [documentAcks, setDocumentAcks] = useState({});
+    const [documentResponses, setDocumentResponses] = useState({});
 
     const orgEvents = events.filter(e => e.orgId === selectedOrg?.id);
     const orgTemplates = templates.filter(t => t.orgId === selectedOrg?.id);
@@ -847,7 +849,8 @@ export default function App() {
         const tmpl = orgTemplates.find(t => t.id === docId);
         return tmpl?.requiresAck;
       });
-      return requiredAcks.every(id => documentAcks[id]);
+      const requiredFields = requiredDocsForEvent.flatMap(docId => (orgTemplates.find(t => t.id === docId)?.fields || []).filter(field => field.required).map(field => `${docId}:${field.id}`));
+      return requiredAcks.every(id => documentAcks[id]) && requiredFields.every(id => String(documentResponses[id] || '').trim());
     };
 
     const handleSubmit = async () => {
@@ -864,7 +867,8 @@ export default function App() {
         status: 'cleared',
         completedDocs,
         signedAt: new Date().toISOString(),
-        signature
+        signature,
+        responses: documentResponses
       };
 
       try {
@@ -979,6 +983,7 @@ export default function App() {
                           <div className={`text-sm mb-4 whitespace-pre-wrap ${template.requiresAck ? 'text-amber-800' : 'text-slate-600'}`}>
                             {template.content.replace(/\[Name\]/g, userProfile.firstName || '[Name]')}
                           </div>
+                          {(template.fields || []).map(field => <label key={field.id} className="mt-3 block text-sm font-bold text-slate-700">{field.label}{field.type === 'multiple_choice' ? <select required={field.required} value={documentResponses[`${template.id}:${field.id}`] || ''} onChange={e => setDocumentResponses({ ...documentResponses, [`${template.id}:${field.id}`]: e.target.value })} className="mt-1 w-full rounded-lg border p-3"><option value="">Select an option</option>{field.options.map(option => <option key={option}>{option}</option>)}</select> : <input required={field.required} value={documentResponses[`${template.id}:${field.id}`] || ''} onChange={e => setDocumentResponses({ ...documentResponses, [`${template.id}:${field.id}`]: e.target.value })} className="mt-1 w-full rounded-lg border p-3"/>}</label>)}
                           {template.requiresAck && (
                             <label className="flex items-start gap-3 cursor-pointer mt-4 pt-4 border-t border-amber-200/50">
                               <input type="checkbox" checked={documentAcks[template.id] || false} onChange={e => setDocumentAcks({...documentAcks, [template.id]: e.target.checked})} className="mt-1 w-4 h-4 text-amber-600 rounded border-amber-300 focus:ring-amber-500" />
