@@ -5,11 +5,11 @@ import {
   createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut,
   GoogleAuthProvider, signInWithPopup 
 } from 'firebase/auth';
-import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, addDoc, getDoc, query, where } from 'firebase/firestore';
+import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, addDoc, getDoc, getDocs, query, where, arrayUnion } from 'firebase/firestore';
 import { 
   ClipboardList, Users, ShieldCheck, Calendar, FileSignature, 
-  CheckCircle2, AlertCircle, ArrowRight, Home, Plus, FileText, Wand2, Trash2,
-  Building2, Briefcase, Lock, UserPlus, LogOut, ChevronRight, ClipboardCheck
+  CheckCircle2, AlertCircle, ArrowRight, Plus, FileText, Wand2, Trash2,
+  Building2, Lock, UserPlus, LogOut, ChevronRight, ClipboardCheck
 } from 'lucide-react';
 import { EmployeePortal, POLICY_LIBRARY, WorkforceAdminPanels } from './workforce';
 import { EmployeeExpansionPanel, WorkforceExpansionPanels } from './workforceExpansion';
@@ -163,18 +163,46 @@ export default function App() {
       setDataError('ReadyRoster could not load its shared data. Please check the Firestore security rules and try again.');
     };
 
-    const unsubOrgs = onSnapshot(orgsRef, (snapshot) => {
-      setOrganizations(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, reportListenerError);
+    let unsubOrgs = () => {};
+    let unsubEvents = () => {};
+    let unsubTemplates = () => {};
+    let unsubJobs = () => {};
 
-    const unsubEvents = onSnapshot(eventsRef, (snapshot) => {
-      setEvents(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, reportListenerError);
+    if (userProfile.role === 'admin') {
+      unsubOrgs = onSnapshot(query(orgsRef, where('adminUid', '==', user.uid)), (snapshot) => {
+        setOrganizations(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+      }, reportListenerError);
+    } else if (userProfile.role === 'volunteer') {
+      unsubOrgs = onSnapshot(query(orgsRef, where('volunteerDiscoverable', '==', true)), (snapshot) => {
+        setOrganizations(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+      }, reportListenerError);
+    } else if (userProfile.orgId) {
+      unsubOrgs = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'organizations', userProfile.orgId), (snapshot) => {
+        setOrganizations(snapshot.exists() ? [{ id: snapshot.id, ...snapshot.data() }] : []);
+      }, reportListenerError);
+    } else {
+      setOrganizations([]);
+    }
 
-    const unsubTemplates = onSnapshot(templatesRef, (snapshot) => {
-      setTemplates(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, reportListenerError);
-    const unsubJobs = onSnapshot(jobsRef, (snapshot) => setJobPostings(snapshot.docs.map(d => ({ id: d.id, ...d.data() }))), reportListenerError);
+    if (userProfile.role === 'admin' && userProfile.orgId) {
+      unsubEvents = onSnapshot(query(eventsRef, where('orgId', '==', userProfile.orgId)), (snapshot) => {
+        setEvents(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+      }, reportListenerError);
+      unsubTemplates = onSnapshot(query(templatesRef, where('orgId', '==', userProfile.orgId)), (snapshot) => {
+        setTemplates(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+      }, reportListenerError);
+      unsubJobs = onSnapshot(query(jobsRef, where('orgId', '==', userProfile.orgId)), (snapshot) => setJobPostings(snapshot.docs.map(d => ({ id: d.id, ...d.data() }))), reportListenerError);
+    } else if (userProfile.role === 'applicant' && userProfile.applicationTargetJobId) {
+      unsubJobs = onSnapshot(doc(jobsRef, userProfile.applicationTargetJobId), (snapshot) => {
+        setJobPostings(snapshot.exists() ? [{ id: snapshot.id, ...snapshot.data() }] : []);
+      }, reportListenerError);
+      setEvents([]);
+      setTemplates([]);
+    } else {
+      setEvents([]);
+      setTemplates([]);
+      setJobPostings([]);
+    }
 
     const workforceUnsubs = [];
     const subscribe = (target, setter) => workforceUnsubs.push(onSnapshot(target, (snapshot) => {
@@ -280,12 +308,41 @@ export default function App() {
     await callWorkforce('acceptEmployeeInvitation', { invitationId });
   };
 
-  const handleCreateJob = async (job) => addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'jobPostings'), { ...job, orgId: userProfile.orgId, status: 'open', createdByUid: user.uid, createdAt: new Date().toISOString() });
-  const handleUpdateApplication = async (applicationId, changes) => setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'applications', applicationId), { ...changes, updatedAt: new Date().toISOString(), updatedByUid: user.uid }, { merge: true });
+  const handleCreateJob = async (job) => addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'jobPostings'), { ...job, orgId: userProfile.orgId, status: 'open', publicApply: true, createdByUid: user.uid, createdAt: new Date().toISOString() });
+  const handleUpdateApplication = async (applicationId, changes) => {
+    const update = { ...changes, updatedAt: new Date().toISOString(), updatedByUid: user.uid };
+    if (changes.stage) {
+      const current = applications.find(application => application.id === applicationId);
+      const history = current?.stageHistory?.length ? [] : [{ stage: current?.stage || 'new', changedAt: current?.submittedAt || new Date().toISOString(), changedByUid: current?.applicantUid || null }];
+      update.stageHistory = arrayUnion(...history, { stage: changes.stage, changedAt: new Date().toISOString(), changedByUid: user.uid });
+    }
+    return setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'applications', applicationId), update, { merge: true });
+  };
   const handleSubmitApplication = async (form) => {
     const job = jobPostings.find(item => item.id === form.jobId);
     if (!job || job.status !== 'open') throw new Error('This application is no longer accepting submissions.');
-    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'applications'), { ...form, orgId: job.orgId, applicantUid: user.uid, name: `${userProfile.firstName || ''} ${userProfile.lastName || ''}`.trim(), email: userProfile.email || user.email || '', stage: 'new', submittedAt: new Date().toISOString() });
+    if (applications.some(application => application.jobId === job.id && application.applicantUid === user.uid)) throw new Error('You have already submitted an application for this role.');
+    const submittedAt = new Date().toISOString();
+    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'applications'), { ...form, orgId: job.orgId, applicantUid: user.uid, name: `${userProfile.firstName || ''} ${userProfile.lastName || ''}`.trim(), email: userProfile.email || user.email || '', stage: 'new', stageHistory: [{ stage: 'new', changedAt: submittedAt, changedByUid: user.uid }], submittedAt });
+  };
+
+  const handleLoadVolunteerOrganization = async (orgId) => {
+    const [eventSnapshot, templateSnapshot] = await Promise.all([
+      getDocs(query(collection(db, 'artifacts', appId, 'public', 'data', 'events'), where('orgId', '==', orgId))),
+      getDocs(query(collection(db, 'artifacts', appId, 'public', 'data', 'documentTemplates'), where('orgId', '==', orgId)))
+    ]);
+    return {
+      events: eventSnapshot.docs.map(d => ({ id: d.id, ...d.data() })).filter(event => event.status !== 'closed'),
+      templates: templateSnapshot.docs.map(d => ({ id: d.id, ...d.data() }))
+    };
+  };
+
+  const handleReviewVolunteer = async (volunteerId, status) => {
+    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'volunteers', volunteerId), {
+      status,
+      reviewedAt: new Date().toISOString(),
+      reviewedByUid: user.uid
+    }, { merge: true });
   };
 
   const handleAddTrainingTemplate = async (template) => {
@@ -448,6 +505,7 @@ export default function App() {
               timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York',
               dueSoonDays: 7,
               defaultPassThreshold: 80,
+              volunteerDiscoverable: true,
               features: { training: true, messaging: true, scheduling: true, timeClock: true },
               createdAt: new Date().toISOString()
             });
@@ -502,6 +560,7 @@ export default function App() {
               timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York',
               dueSoonDays: 7,
               defaultPassThreshold: 80,
+              volunteerDiscoverable: true,
               features: { training: true, messaging: true, scheduling: true, timeClock: true },
               createdAt: new Date().toISOString()
             });
@@ -562,12 +621,12 @@ export default function App() {
               {!isLogin && (
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1 uppercase">First Name</label>
-                    <input type="text" required value={formData.firstName} onChange={e => setFormData({...formData, firstName: e.target.value})} className="w-full p-2.5 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+                    <label htmlFor="auth-first-name" className="block text-xs font-bold text-slate-700 mb-1 uppercase">First Name</label>
+                    <input id="auth-first-name" name="firstName" type="text" required value={formData.firstName} onChange={e => setFormData({...formData, firstName: e.target.value})} className="w-full p-2.5 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
                   </div>
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1 uppercase">Last Name</label>
-                    <input type="text" required value={formData.lastName} onChange={e => setFormData({...formData, lastName: e.target.value})} className="w-full p-2.5 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+                    <label htmlFor="auth-last-name" className="block text-xs font-bold text-slate-700 mb-1 uppercase">Last Name</label>
+                    <input id="auth-last-name" name="lastName" type="text" required value={formData.lastName} onChange={e => setFormData({...formData, lastName: e.target.value})} className="w-full p-2.5 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
                   </div>
                 </div>
               )}
@@ -575,12 +634,12 @@ export default function App() {
               {!isLogin && roleTab === 'admin' && (
                 <div className="space-y-4 p-4 bg-indigo-50 rounded-xl border border-indigo-100">
                   <div>
-                    <label className="block text-xs font-bold text-indigo-900 mb-1 uppercase">Organization Name</label>
-                    <input type="text" required value={formData.orgName} onChange={e => setFormData({...formData, orgName: e.target.value})} className="w-full p-2.5 border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+                    <label htmlFor="auth-org-name" className="block text-xs font-bold text-indigo-900 mb-1 uppercase">Organization Name</label>
+                    <input id="auth-org-name" name="organizationName" type="text" required value={formData.orgName} onChange={e => setFormData({...formData, orgName: e.target.value})} className="w-full p-2.5 border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
                   </div>
                   <div>
-                    <label className="block text-xs font-bold text-indigo-900 mb-1 uppercase">Industry</label>
-                    <select value={formData.industry} onChange={e => setFormData({...formData, industry: e.target.value})} className="w-full p-2.5 border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white">
+                    <label htmlFor="auth-industry" className="block text-xs font-bold text-indigo-900 mb-1 uppercase">Industry</label>
+                    <select id="auth-industry" name="industry" value={formData.industry} onChange={e => setFormData({...formData, industry: e.target.value})} className="w-full p-2.5 border border-indigo-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none bg-white">
                       <option value="not_specified">Not Specified</option>
                       <option value="nonprofit">Non-Profit & Community</option>
                       <option value="corporate">Corporate & Enterprise</option>
@@ -601,12 +660,12 @@ export default function App() {
               )}
 
               <div>
-                <label className="text-xs font-bold text-slate-700 mb-1 uppercase flex items-center gap-2"><Lock size={14}/> Email Account</label>
-                <input type="email" required value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className="w-full p-2.5 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+                <label htmlFor="auth-email" className="text-xs font-bold text-slate-700 mb-1 uppercase flex items-center gap-2"><Lock size={14}/> Email Account</label>
+                <input id="auth-email" name="email" type="email" autoComplete="email" required value={formData.email} onChange={e => setFormData({...formData, email: e.target.value})} className="w-full p-2.5 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
               </div>
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1 uppercase">Password</label>
-                <input type="password" required value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} className="w-full p-2.5 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+                <label htmlFor="auth-password" className="block text-xs font-bold text-slate-700 mb-1 uppercase">Password</label>
+                <input id="auth-password" name="password" type="password" autoComplete={isLogin ? 'current-password' : 'new-password'} required value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} className="w-full p-2.5 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
               </div>
 
               <button type="submit" className="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-3 rounded-lg transition-colors mt-2">
@@ -646,7 +705,9 @@ export default function App() {
     const [adminTab, setAdminTab] = useState('dashboard');
     const [newEventName, setNewEventName] = useState('');
     const [newEventType, setNewEventType] = useState('general');
+    const [newEventDate, setNewEventDate] = useState(new Date().toISOString().slice(0, 10));
     const [newTemplate, setNewTemplate] = useState({ title: '', content: '', requiresAck: false });
+    const [actionError, setActionError] = useState('');
 
     const myOrg = organizations.find(o => o.id === userProfile?.orgId);
     const myEvents = events.filter(e => e.orgId === userProfile?.orgId);
@@ -655,15 +716,17 @@ export default function App() {
 
     const handleCreateEvent = async (e) => {
       e.preventDefault();
-      if (!newEventName) return;
+      setActionError('');
+      if (!newEventName.trim() || !newEventDate) return;
 
       const requiredDocs = myTemplates.map(t => t.id);
 
       const newEvent = {
         orgId: userProfile.orgId,
-        name: newEventName,
+        name: newEventName.trim(),
         type: newEventType,
-        date: new Date().toISOString().split('T')[0],
+        date: newEventDate,
+        status: 'active',
         requiredDocs,
         createdAt: new Date().toISOString()
       };
@@ -671,7 +734,7 @@ export default function App() {
       try {
         await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'events'), newEvent);
         setNewEventName('');
-      } catch (err) { /* Handle err */ }
+      } catch (err) { setActionError(`The initiative could not be created: ${err.message}`); }
     };
 
     const handleCreateTemplate = async (e) => {
@@ -683,13 +746,13 @@ export default function App() {
           ...newTemplate, id, orgId: userProfile.orgId 
         });
         setNewTemplate({ title: '', content: '', requiresAck: false });
-      } catch (err) { /* Handle err */ }
+      } catch (err) { setActionError(`The document could not be saved: ${err.message}`); }
     };
 
     const handleDeleteTemplate = async (id) => {
       try {
         await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'documentTemplates', id));
-      } catch (err) { /* Handle err */ }
+      } catch (err) { setActionError(`The document could not be deleted: ${err.message}`); }
     };
 
     return (
@@ -717,6 +780,7 @@ export default function App() {
         </div>
 
         <div className="max-w-6xl mx-auto p-6 animate-in fade-in zoom-in-95 duration-300 mt-4">
+          {actionError && <div role="alert" className="mb-5 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">{actionError}</div>}
           <div className="flex gap-3 mb-8 border-b border-slate-200 pb-4">
             <button onClick={() => setAdminTab('dashboard')} className={`px-4 py-2 rounded-lg font-bold transition-colors ${adminTab === 'dashboard' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'}`}>Dashboard & Rosters</button>
             <button onClick={() => setAdminTab('workforce')} className={`px-4 py-2 rounded-lg font-bold flex items-center gap-2 transition-colors ${adminTab === 'workforce' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'}`}><Users size={16} /> Workforce</button>
@@ -727,7 +791,7 @@ export default function App() {
             <>
               <div className="grid md:grid-cols-3 gap-6 mb-8">
                 <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                  <div className="flex items-center gap-3 text-indigo-600 mb-2"><Users size={24} /><h3 className="font-semibold text-slate-700">Total Applications</h3></div>
+                  <div className="flex items-center gap-3 text-indigo-600 mb-2"><Users size={24} /><h3 className="font-semibold text-slate-700">Total Registrations</h3></div>
                   <p className="text-4xl font-black text-slate-900">{myVolunteers.length}</p>
                 </div>
                 <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
@@ -735,8 +799,8 @@ export default function App() {
                   <p className="text-4xl font-black text-slate-900">{myVolunteers.filter(v => v.status === 'cleared').length}</p>
                 </div>
                 <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
-                  <div className="flex items-center gap-3 text-amber-500 mb-2"><FileText size={24} /><h3 className="font-semibold text-slate-700">Active Events</h3></div>
-                  <p className="text-4xl font-black text-slate-900">{myEvents.length}</p>
+                  <div className="flex items-center gap-3 text-amber-500 mb-2"><FileText size={24} /><h3 className="font-semibold text-slate-700">Active Initiatives</h3></div>
+                  <p className="text-4xl font-black text-slate-900">{myEvents.filter(event => event.status !== 'closed').length}</p>
                 </div>
               </div>
 
@@ -751,11 +815,12 @@ export default function App() {
                           <th className="p-4 font-bold">Event/Project</th>
                           <th className="p-4 font-bold">Clearance</th>
                           <th className="p-4 font-bold">Signed Docs</th>
+                          <th className="p-4 font-bold">Review</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
                         {myVolunteers.length === 0 ? (
-                          <tr><td colSpan="4" className="p-8 text-center text-slate-400 font-medium">No registrations yet.</td></tr>
+                          <tr><td colSpan="5" className="p-8 text-center text-slate-400 font-medium">No registrations yet.</td></tr>
                         ) : (
                           myVolunteers.map(vol => {
                             const event = myEvents.find(e => e.id === vol.eventId);
@@ -767,9 +832,15 @@ export default function App() {
                                 </td>
                                 <td className="p-4 text-sm font-medium text-slate-700">{event?.name || 'Unknown'}</td>
                                 <td className="p-4">
-                                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-100 text-emerald-800"><CheckCircle2 size={14}/> Cleared</span>
+                                  <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold ${vol.status === 'cleared' ? 'bg-emerald-100 text-emerald-800' : vol.status === 'rejected' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'}`}>
+                                    {vol.status === 'cleared' ? <CheckCircle2 size={14}/> : <AlertCircle size={14}/>} {vol.status === 'cleared' ? 'Cleared' : vol.status === 'rejected' ? 'Needs changes' : 'Pending review'}
+                                  </span>
                                 </td>
                                 <td className="p-4 text-sm font-mono text-slate-500">{vol.completedDocs?.length || 0} files</td>
+                                <td className="p-4">
+                                  {vol.status !== 'cleared' && <button onClick={() => handleReviewVolunteer(vol.id, 'cleared')} className="mr-2 rounded bg-emerald-600 px-3 py-2 text-xs font-bold text-white">Approve</button>}
+                                  {vol.status !== 'rejected' && <button onClick={() => handleReviewVolunteer(vol.id, 'rejected')} className="rounded border border-red-200 px-3 py-2 text-xs font-bold text-red-700">Needs changes</button>}
+                                </td>
                               </tr>
                             )
                           })
@@ -784,7 +855,19 @@ export default function App() {
                   <form onSubmit={handleCreateEvent} className="space-y-4">
                     <div>
                       <label className="block text-xs font-bold text-slate-700 mb-1 uppercase">Event / Project Name</label>
-                      <input type="text" required value={newEventName} onChange={(e) => setNewEventName(e.target.value)} className="w-full p-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="e.g. Q3 Volunteer Drive" />
+                      <input id="event-name" name="eventName" type="text" required value={newEventName} onChange={(e) => setNewEventName(e.target.value)} className="w-full p-3 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="e.g. Q3 Volunteer Drive" />
+                    </div>
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <div>
+                        <label htmlFor="event-type" className="block text-xs font-bold text-slate-700 mb-1 uppercase">Initiative type</label>
+                        <select id="event-type" name="eventType" value={newEventType} onChange={event => setNewEventType(event.target.value)} className="w-full rounded-lg border border-slate-200 bg-white p-3 focus:ring-2 focus:ring-indigo-500 outline-none">
+                          <option value="general">General</option><option value="volunteer">Volunteer</option><option value="training">Training</option><option value="event">Event</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label htmlFor="event-date" className="block text-xs font-bold text-slate-700 mb-1 uppercase">Initiative date</label>
+                        <input id="event-date" name="eventDate" type="date" required value={newEventDate} onChange={event => setNewEventDate(event.target.value)} className="w-full rounded-lg border border-slate-200 p-3 focus:ring-2 focus:ring-indigo-500 outline-none" />
+                      </div>
                     </div>
                     <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
                       <div className="text-xs text-slate-800 font-bold mb-2">Automated Compliance Generation:</div>
@@ -894,20 +977,37 @@ export default function App() {
     );
   };
 
-  const VolunteerPortal = () => {
+  const VolunteerPortal = ({ onLoadOrganization }) => {
     const [step, setStep] = useState(0); 
     const [selectedOrg, setSelectedOrg] = useState(null);
     const [selectedEvent, setSelectedEvent] = useState(null);
+    const [orgEvents, setOrgEvents] = useState([]);
+    const [orgTemplates, setOrgTemplates] = useState([]);
+    const [orgLoading, setOrgLoading] = useState(false);
+    const [portalError, setPortalError] = useState('');
     const [formData, setFormData] = useState({ emergencyName: '', emergencyPhone: '' });
     const [signature, setSignature] = useState('');
     const [documentAcks, setDocumentAcks] = useState({});
     const [documentResponses, setDocumentResponses] = useState({});
 
-    const orgEvents = events.filter(e => e.orgId === selectedOrg?.id);
-    const orgTemplates = templates.filter(t => t.orgId === selectedOrg?.id);
+    const handleSelectOrganization = async (org) => {
+      setPortalError('');
+      setOrgLoading(true);
+      try {
+        const content = await onLoadOrganization(org.id);
+        setSelectedOrg(org);
+        setOrgEvents(content.events);
+        setOrgTemplates(content.templates);
+        setStep(1);
+      } catch (err) {
+        setPortalError(`This organization could not be opened: ${err.message}`);
+      } finally {
+        setOrgLoading(false);
+      }
+    };
 
     const canSubmitDocuments = () => {
-      if (!signature) return false;
+      if (!signature.trim()) return false;
       const requiredDocsForEvent = selectedEvent?.requiredDocs || [];
       const requiredAcks = requiredDocsForEvent.filter(docId => {
         const tmpl = orgTemplates.find(t => t.id === docId);
@@ -928,7 +1028,7 @@ export default function App() {
         email: userProfile.email,
         emergencyName: formData.emergencyName,
         emergencyPhone: formData.emergencyPhone,
-        status: 'cleared',
+        status: 'pending',
         completedDocs,
         signedAt: new Date().toISOString(),
         signature,
@@ -936,9 +1036,10 @@ export default function App() {
       };
 
       try {
-        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'volunteers'), volunteerDoc);
+        const volunteerRef = doc(db, 'artifacts', appId, 'public', 'data', 'volunteers', `vol_${user.uid}_${selectedEvent.id}`);
+        await setDoc(volunteerRef, volunteerDoc);
         setStep(4);
-      } catch (err) { console.error("Error saving volunteer", err); }
+      } catch (err) { setPortalError(`Your registration could not be submitted: ${err.message}`); }
     };
 
     return (
@@ -966,12 +1067,14 @@ export default function App() {
             </div>
 
             <div className="p-8">
+              {portalError && <div role="alert" className="mb-5 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-medium text-red-700">{portalError}</div>}
+
               {step === 0 && (
                 <div className="space-y-4 animate-in fade-in">
                   <h2 className="text-lg font-bold text-slate-800 mb-4">Select an Organization to Join</h2>
                   <div className="grid gap-3">
                     {organizations.map(org => (
-                      <button key={org.id} onClick={() => { setSelectedOrg(org); setStep(1); }} className="flex items-center justify-between p-4 border-2 border-slate-100 rounded-xl hover:border-indigo-500 hover:bg-indigo-50 transition-all text-left group">
+                      <button key={org.id} disabled={orgLoading} onClick={() => handleSelectOrganization(org)} className="flex items-center justify-between p-4 border-2 border-slate-100 rounded-xl hover:border-indigo-500 hover:bg-indigo-50 transition-all text-left group disabled:cursor-wait disabled:opacity-60">
                         <div>
                           <div className="font-bold text-slate-800 flex items-center gap-2"><Building2 size={16}/> {org.name}</div>
                           <div className="text-xs text-slate-500 uppercase font-bold tracking-wider mt-1">{INDUSTRY_LABELS[org.industry] || org.industry || 'Not Specified'}</div>
@@ -979,7 +1082,8 @@ export default function App() {
                         <ChevronRight className="text-slate-300 group-hover:text-indigo-500 transition-colors" />
                       </button>
                     ))}
-                    {organizations.length === 0 && <p className="text-slate-500 text-center py-8">No organizations found.</p>}
+                    {orgLoading && <p role="status" className="text-slate-500 text-center py-4">Loading initiatives…</p>}
+                    {organizations.length === 0 && !orgLoading && <p className="text-slate-500 text-center py-8">No organizations found.</p>}
                   </div>
                 </div>
               )}
@@ -1013,18 +1117,18 @@ export default function App() {
                   <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2"><ClipboardList size={18}/> Emergency Contact</h3>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1 uppercase">Contact Name</label>
-                      <input type="text" value={formData.emergencyName} onChange={e => setFormData({...formData, emergencyName: e.target.value})} className="w-full p-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none" />
+                      <label htmlFor="emergency-name" className="block text-xs font-bold text-slate-700 mb-1 uppercase">Contact Name</label>
+                      <input id="emergency-name" name="emergencyName" type="text" required value={formData.emergencyName} onChange={e => setFormData({...formData, emergencyName: e.target.value})} className="w-full p-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none" />
                     </div>
                     <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1 uppercase">Phone Number</label>
-                      <input type="tel" value={formData.emergencyPhone} onChange={e => setFormData({...formData, emergencyPhone: e.target.value})} className="w-full p-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none" />
+                      <label htmlFor="emergency-phone" className="block text-xs font-bold text-slate-700 mb-1 uppercase">Phone Number</label>
+                      <input id="emergency-phone" name="emergencyPhone" type="tel" required value={formData.emergencyPhone} onChange={e => setFormData({...formData, emergencyPhone: e.target.value})} className="w-full p-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none" />
                     </div>
                   </div>
                   
                   <div className="flex gap-4 pt-4">
                     <button onClick={() => setStep(1)} className="flex-1 py-3 text-slate-600 font-bold bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors">Back</button>
-                    <button disabled={!formData.emergencyName} onClick={() => setStep(3)} className="flex-[2] py-3 text-white font-bold bg-slate-900 hover:bg-slate-800 rounded-xl transition-colors disabled:opacity-50">Continue to Documents</button>
+                    <button disabled={!formData.emergencyName.trim() || !formData.emergencyPhone.trim()} onClick={() => setStep(3)} className="flex-[2] py-3 text-white font-bold bg-slate-900 hover:bg-slate-800 rounded-xl transition-colors disabled:opacity-50">Continue to Documents</button>
                   </div>
                 </div>
               )}
@@ -1063,8 +1167,8 @@ export default function App() {
                   </div>
 
                   <div className="pt-4 border-t border-slate-200 mt-6">
-                    <label className="text-xs font-bold text-slate-700 mb-2 flex items-center gap-2 uppercase"><FileSignature size={16}/> Master Digital Signature</label>
-                    <input type="text" value={signature} onChange={e => setSignature(e.target.value)} placeholder="Type your full legal name to sign all documents" className="w-full p-4 border-2 border-slate-200 rounded-xl focus:border-emerald-500 outline-none font-bold font-serif text-lg bg-white shadow-inner" />
+                    <label htmlFor="master-signature" className="text-xs font-bold text-slate-700 mb-2 flex items-center gap-2 uppercase"><FileSignature size={16}/> Master Digital Signature</label>
+                    <input id="master-signature" name="signature" type="text" value={signature} onChange={e => setSignature(e.target.value)} placeholder="Type your full legal name to sign all documents" className="w-full p-4 border-2 border-slate-200 rounded-xl focus:border-emerald-500 outline-none font-bold font-serif text-lg bg-white shadow-inner" />
                   </div>
 
                   <div className="flex gap-4 pt-2">
@@ -1077,9 +1181,9 @@ export default function App() {
               {step === 4 && (
                 <div className="text-center py-12 animate-in zoom-in-95">
                   <div className="w-20 h-20 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-6"><CheckCircle2 size={40} /></div>
-                  <h2 className="text-2xl font-black text-slate-800 mb-2">Registration Complete!</h2>
-                  <p className="text-slate-500 mb-8 max-w-md mx-auto">Thank you, {userProfile.firstName}. Your documents have been securely filed and you are cleared for <strong>{selectedEvent?.name}</strong> at {selectedOrg?.name}.</p>
-                  <button onClick={() => { setStep(0); setSignature(''); setDocumentAcks({}); }} className="px-8 py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 transition-colors">Return to Dashboard</button>
+                  <h2 className="text-2xl font-black text-slate-800 mb-2">Registration Submitted</h2>
+                  <p className="text-slate-500 mb-8 max-w-md mx-auto">Thank you, {userProfile.firstName}. Your documents were submitted and are awaiting organization review for <strong>{selectedEvent?.name}</strong> at {selectedOrg?.name}.</p>
+                  <button onClick={() => { setStep(0); setSelectedOrg(null); setSelectedEvent(null); setOrgEvents([]); setOrgTemplates([]); setSignature(''); setDocumentAcks({}); setDocumentResponses({}); setFormData({ emergencyName: '', emergencyPhone: '' }); setPortalError(''); }} className="px-8 py-3 bg-slate-900 text-white font-bold rounded-xl hover:bg-slate-800 transition-colors">Return to Dashboard</button>
                 </div>
               )}
             </div>
@@ -1106,7 +1210,7 @@ export default function App() {
 
   return (
     <div className="font-sans antialiased text-slate-900 selection:bg-indigo-200">
-      {userProfile.role === 'admin' ? <AdminDashboard /> : userProfile.role === 'applicant' ? <ApplicantPortal profile={userProfile} jobs={jobPostings} onSubmit={handleSubmitApplication} /> : userProfile.role === 'employee' ? <>
+      {userProfile.role === 'admin' ? <AdminDashboard /> : userProfile.role === 'applicant' ? <ApplicantPortal profile={userProfile} jobs={jobPostings} onSubmit={handleSubmitApplication} onLogout={handleLogout} /> : userProfile.role === 'employee' ? <>
         <EmployeePortal
         profile={userProfile}
         user={user}
@@ -1118,6 +1222,7 @@ export default function App() {
         timeEntries={timeEntries}
         leaveRequests={leaveRequests}
         availability={availability}
+        onLogout={handleLogout}
         onMessage={handleEmployeeMessage}
         onReadNotification={handleMarkNotificationRead}
         onLeaveRequest={handleLeaveRequest}
@@ -1127,7 +1232,7 @@ export default function App() {
         onAcceptInvite={handleAcceptInvitation}
       />
       <EmployeeExpansionPanel profile={userProfile} organization={organizationForUser} roles={orgRoles} shifts={shifts} timeEntries={timeEntries} onSaveProfile={handleSaveProfile} onClock={handleClock} onTradeRequest={handleTradeRequest} />
-      </> : <VolunteerPortal />}
+      </> : <VolunteerPortal onLoadOrganization={handleLoadVolunteerOrganization} />}
     </div>
   );
 }
